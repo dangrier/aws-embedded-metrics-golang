@@ -17,7 +17,7 @@ func TestNew(t *testing.T) {
 			name: "default",
 			expected: &Logger{
 				out:       os.Stdout,
-				timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+				timestamp: time.Now().UnixMilli(),
 			},
 		},
 		{
@@ -28,7 +28,7 @@ func TestNew(t *testing.T) {
 			},
 			expected: &Logger{
 				out:       os.Stderr,
-				timestamp: time.Now().Add(time.Hour).UnixNano() / int64(time.Millisecond),
+				timestamp: time.Now().Add(time.Hour).UnixMilli(),
 			},
 		},
 		{
@@ -38,7 +38,7 @@ func TestNew(t *testing.T) {
 			},
 			expected: &Logger{
 				out:               os.Stdout,
-				timestamp:         time.Now().UnixNano() / int64(time.Millisecond),
+				timestamp:         time.Now().UnixMilli(),
 				withoutDimensions: false,
 			},
 		},
