@@ -19,6 +19,14 @@ test-race:
 fuzz time="1m":
     go test ./emf -run '^$' -fuzz FuzzSpecCompliance -fuzztime {{time}} -fuzzminimizetime 100x
 
+# Run benchmarks
+bench count="6":
+    go test ./emf -run '^$' -bench . -benchtime 200ms -count {{count}}
+
+# Compare benchmarks with a git ref, and fail on a regression
+bench-compare ref="main" rounds="10":
+    go tool benchcompare -base {{ref}} -rounds {{rounds}}
+
 # Run go vet
 vet:
     go vet ./...
