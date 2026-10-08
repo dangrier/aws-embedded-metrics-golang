@@ -74,6 +74,10 @@ up to 100 metrics each. Every line keeps the same timestamp, properties and dime
 each metric keeps its own namespace and dimensions. If your code reads the output (in tests,
 for example), expect one or more lines per `Log()`.
 
+A `Logger` and its contexts are safe to use from several goroutines at once. Lines from
+concurrent `Log()` calls are never mixed together. The error handler may be called from
+several goroutines too, and it can safely use the logger.
+
 Functions for reporting metrics:
 
 ```
