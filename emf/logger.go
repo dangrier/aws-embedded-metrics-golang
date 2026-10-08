@@ -216,8 +216,9 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 // Log prints all Contexts and metric values to chosen output in Embedded Metric Format.
 // The spec allows at most 100 metrics per log event, so more than that are
 // split across several lines. A timestamp outside the window CloudWatch
-// accepts (14 days in the past to 2 hours in the future) is reported to the
-// error handler, but the lines are still written.
+// accepts (14 days in the past to 2 hours in the future), or a line over
+// CloudWatch's 1 MB limit, is reported to the error handler, but the lines
+// are still written.
 func (l *Logger) Log() {
 	// Take a snapshot under the lock, then encode outside it so concurrent
 	// Log calls don't wait on each other. Writing has its own lock, so lines
@@ -232,6 +233,10 @@ func (l *Logger) Log() {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("emf: encoding metrics: %w", err))
 			continue
+		}
+		if len(buf) > maxEventBytes {
+			errs = append(errs, fmt.Errorf("%w: log line is %d bytes, over CloudWatch's 1 MB limit, so CloudWatch will reject it",
+				ErrInvalid, len(buf)))
 		}
 		lines = append(lines, append(buf, '\n'))
 	}

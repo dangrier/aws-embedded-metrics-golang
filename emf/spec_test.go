@@ -66,8 +66,8 @@ func specViolations(line []byte, now time.Time) []string {
 		v = append(v, fmt.Sprintf(format, a...))
 	}
 
-	if len(line) > maxEventBytes {
-		add("event is %d bytes, over the 1 MB limit", len(line))
+	if n := len(bytes.TrimSuffix(line, []byte("\n"))); n > maxEventBytes {
+		add("event is %d bytes, over the 1 MB limit", n)
 	}
 
 	// The LogEvent MUST be a JSON object with no data before or after it.

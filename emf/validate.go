@@ -23,6 +23,7 @@ const (
 	maxMetricsPerEvent   = 100
 	maxTimestampAge      = 14 * 24 * time.Hour
 	maxTimestampAhead    = 2 * time.Hour
+	maxEventBytes        = 1 << 20 // 1 MB, CloudWatch Logs' event size limit
 	metadataKey          = "_aws"
 )
 
