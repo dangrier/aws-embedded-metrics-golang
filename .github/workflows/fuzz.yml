@@ -1,0 +1,68 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: "0 23 * * 0" # Mondays 09:00 AEST
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: How long to fuzz for (a Go duration, like 30m)
+        default: 10m
+  pull_request:
+    paths:
+      - .github/workflows/fuzz.yml # quick smoke test when this workflow changes
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Keep the fuzzer's corpus of interesting inputs between runs, so each
+      # run carries on from the last instead of starting over.
+      - name: Find fuzz cache
+        id: fuzzcache
+        run: echo "dir=$(go env GOCACHE)/fuzz" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.fuzzcache.outputs.dir }}
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Fuzz
+        env:
+          FUZZTIME: ${{ github.event_name == 'pull_request' && '30s' || inputs.fuzztime || '10m' }}
+        run: go test ./emf -run '^$' -fuzz FuzzSpecCompliance -fuzztime "$FUZZTIME" -fuzzminimizetime 100x
+
+      - name: Upload failing input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failure
+          path: emf/testdata/fuzz
+          if-no-files-found: ignore
+      - name: Explain how to reproduce
+        if: failure()
+        run: |
+          cat >>"$GITHUB_STEP_SUMMARY" <<'MD'
+          ## Fuzzing found a failure
+
+          The failing input is in the **fuzz-failure** artifact. To reproduce it:
+
+          1. Download the artifact and copy its `FuzzSpecCompliance` folder to `emf/testdata/fuzz/`
+          2. Run `go test ./emf -run FuzzSpecCompliance` and the failing input runs as a normal test case
+          3. Fix the bug, then commit the input file so it stays as a regression test
+          MD
