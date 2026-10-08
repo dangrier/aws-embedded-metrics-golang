@@ -31,3 +31,14 @@ const (
 	TerabitsSecond  MetricUnit = "Terabits/Second"
 	CountSecond     MetricUnit = "Count/Second"
 )
+
+// units lists every unit the EMF spec allows.
+var units = []MetricUnit{
+	None, Seconds, Microseconds, Milliseconds,
+	Bytes, Kilobytes, Megabytes, Gigabytes, Terabytes,
+	Bits, Kilobits, Megabits, Gigabits, Terabits,
+	Percent, Count,
+	BytesSecond, KilobytesSecond, MegabytesSecond, GigabytesSecond, TerabytesSecond,
+	BitsSecond, KilobitsSecond, MegabitsSecond, GigabitsSecond, TerabitsSecond,
+	CountSecond,
+}

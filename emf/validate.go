@@ -1,0 +1,140 @@
+package emf
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+	"strings"
+)
+
+// ErrInvalid is wrapped by every error passed to the WithErrorHandler
+// handler for input the logger skipped because it would break the EMF spec.
+var ErrInvalid = errors.New("emf: invalid input")
+
+// Limits from the EMF specification.
+const (
+	maxNameLen           = 255
+	maxDimensionKeyLen   = 250
+	maxDimensionValueLen = 1024
+	maxDimensionSetSize  = 30
+	metadataKey          = "_aws"
+)
+
+// maxMetricMagnitude is 2^360, the largest magnitude a metric value may have.
+var maxMetricMagnitude = math.Ldexp(1, 360)
+
+// registry tracks the root member names used by a Logger and all of its
+// Contexts, so metrics and dimensions don't overwrite each other.
+type registry struct {
+	onError    func(error)
+	dimensions map[string]bool
+	metrics    map[string]bool
+}
+
+func newRegistry(onError func(error)) *registry {
+	return &registry{
+		onError:    onError,
+		dimensions: make(map[string]bool),
+		metrics:    make(map[string]bool),
+	}
+}
+
+func (r *registry) report(err error) {
+	if r.onError != nil {
+		r.onError(err)
+	}
+}
+
+func (r *registry) invalid(format string, a ...any) {
+	r.report(fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, a...)...))
+}
+
+func (r *registry) checkNamespace(namespace string) bool {
+	if !validString(namespace, maxNameLen) {
+		r.invalid("skipped namespace %q: must be 1 to %d printable ASCII characters, not only whitespace", namespace, maxNameLen)
+		return false
+	}
+	return true
+}
+
+func (r *registry) checkDimensionSet(dimensions []Dimension) bool {
+	if len(dimensions) > maxDimensionSetSize {
+		r.invalid("skipped dimension set: has %d dimensions, more than %d", len(dimensions), maxDimensionSetSize)
+		return false
+	}
+	for _, d := range dimensions {
+		switch {
+		case !validString(d.Key, maxDimensionKeyLen) || strings.HasPrefix(d.Key, ":"):
+			r.invalid("skipped dimension set: key %q must be 1 to %d printable ASCII characters, not only whitespace, and not start with ':'", d.Key, maxDimensionKeyLen)
+		case d.Key == metadataKey:
+			r.invalid("skipped dimension set: key %q is reserved", d.Key)
+		case r.metrics[d.Key]:
+			r.invalid("skipped dimension set: key %q is already a metric", d.Key)
+		case !validString(d.Value, maxDimensionValueLen):
+			r.invalid("skipped dimension set: value %q for key %q must be 1 to %d printable ASCII characters, not only whitespace", d.Value, d.Key, maxDimensionValueLen)
+		default:
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (r *registry) checkMetric(name string, value any, unit MetricUnit) bool {
+	switch {
+	case !validString(name, maxNameLen):
+		r.invalid("skipped metric %q: name must be 1 to %d printable ASCII characters, not only whitespace", name, maxNameLen)
+	case name == metadataKey:
+		r.invalid("skipped metric %q: name is reserved", name)
+	case r.dimensions[name]:
+		r.invalid("skipped metric %q: name is already a dimension", name)
+	case !validUnit(unit):
+		r.invalid("skipped metric %q: unknown unit %q", name, unit)
+	case !validValue(value):
+		r.invalid("skipped metric %q: value %v must be a finite number between -2^360 and 2^360", name, value)
+	default:
+		return true
+	}
+	return false
+}
+
+func (r *registry) checkProperty(key string) bool {
+	switch {
+	case key == metadataKey:
+		r.invalid("skipped property %q: key is reserved", key)
+	case r.metrics[key]:
+		r.invalid("skipped property %q: key is already a metric", key)
+	case r.dimensions[key]:
+		r.invalid("skipped property %q: key is already a dimension", key)
+	default:
+		return true
+	}
+	return false
+}
+
+// validString reports whether s has 1 to maxLen printable ASCII characters
+// and is not only whitespace.
+func validString(s string, maxLen int) bool {
+	if len(s) < 1 || len(s) > maxLen || strings.TrimSpace(s) == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validValue(value any) bool {
+	f, ok := value.(float64)
+	if !ok {
+		return true // ints are always within range
+	}
+	return !math.IsNaN(f) && math.Abs(f) <= maxMetricMagnitude
+}
+
+func validUnit(unit MetricUnit) bool {
+	return unit == "" || slices.Contains(units, unit)
+}
