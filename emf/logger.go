@@ -115,6 +115,7 @@ func New(opts ...LoggerOption) *Logger {
 
 	l.values = values
 	l.registry = newRegistry(l.onError)
+	l.registry.logger = &l
 	l.defaultContext = newContext(values, l.withoutDimensions, l.registry)
 
 	return &l

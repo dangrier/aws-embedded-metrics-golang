@@ -109,18 +109,23 @@ func (c *Context) add(name string, value any, unit MetricUnit, resolution int) {
 		return
 	}
 
-	// The name is already a metric. Its definition in this context, if any,
-	// must match.
+	// The name is already a metric. Every context shares its values, so its
+	// unit and resolution must match wherever it was first defined.
 	i := slices.IndexFunc(c.metricDirective.Metrics, func(m MetricDefinition) bool { return m.Name == name })
-	switch {
-	case i < 0:
-		// First use of the name in this context. It shares the values.
-		c.metricDirective.Metrics = append(c.metricDirective.Metrics, def)
-	case c.metricDirective.Metrics[i] != def:
-		existing := c.metricDirective.Metrics[i]
+	existing := def
+	if i >= 0 {
+		existing = c.metricDirective.Metrics[i]
+	} else if d, ok := r.definition(name); ok {
+		existing = d
+	}
+	if existing != def {
 		r.invalid("skipped metric %q: unit %q and %s don't match its earlier unit %q and %s",
 			name, unit, resolutionName(resolution), existing.Unit, resolutionName(existing.StorageResolution))
 		return
+	}
+	if i < 0 {
+		// First use of the name in this context. It shares the values.
+		c.metricDirective.Metrics = append(c.metricDirective.Metrics, def)
 	}
 	if r.more == nil {
 		r.more = make(map[string][]any)

@@ -93,6 +93,26 @@ func TestRepeatedMetricNames(t *testing.T) {
 			expected:     map[string]any{"m": []any{1.0, 2.0}},
 			expectedDefs: []string{"aws-embedded-metrics/m None <nil>", "other/m None <nil>"},
 		},
+		{
+			name: "different unit in another context is skipped",
+			given: func(l *emf.Logger) {
+				l.MetricAs("Latency", 10, emf.Milliseconds)
+				l.NewContext().Namespace("other").MetricAs("Latency", 2, emf.Seconds)
+			},
+			expected:     map[string]any{"Latency": 10.0},
+			expectedDefs: []string{"aws-embedded-metrics/Latency Milliseconds <nil>"},
+			errors:       1,
+		},
+		{
+			name: "different resolution in another context is skipped",
+			given: func(l *emf.Logger) {
+				l.NewContext().Namespace("other").Put("m", 1, emf.HighResolution())
+				l.Put("m", 2)
+			},
+			expected:     map[string]any{"m": 1.0},
+			expectedDefs: []string{"other/m None 1"},
+			errors:       1,
+		},
 	}
 
 	for _, tc := range tcs {

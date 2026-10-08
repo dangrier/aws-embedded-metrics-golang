@@ -36,6 +36,7 @@ var maxMetricMagnitude = math.Ldexp(1, 360)
 // guards all state shared by the Logger and its Contexts.
 type registry struct {
 	mu         sync.Mutex
+	logger     *Logger // owner, to find metric definitions in its contexts
 	onError    func(error)
 	pending    []error
 	dimensions map[string]bool
@@ -113,6 +114,20 @@ func (r *registry) checkDimensionSet(dimensions []Dimension) bool {
 		return false
 	}
 	return true
+}
+
+// definition returns the first definition of a metric name in any of the
+// logger's contexts.
+func (r *registry) definition(name string) (MetricDefinition, bool) {
+	contexts := append([]*Context{&r.logger.defaultContext}, r.logger.contexts...)
+	for _, c := range contexts {
+		for _, m := range c.metricDirective.Metrics {
+			if m.Name == name {
+				return m, true
+			}
+		}
+	}
+	return MetricDefinition{}, false
 }
 
 func (r *registry) isMetric(name string) bool {
