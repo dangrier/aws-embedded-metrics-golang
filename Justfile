@@ -25,7 +25,7 @@ lint:
 
 # Format code
 fmt:
-    gofmt -w .
+    gofmt -w ./...
 
 # Scan dependencies for known vulnerabilities
 scan:
