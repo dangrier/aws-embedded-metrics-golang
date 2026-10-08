@@ -27,6 +27,11 @@ lint:
 fmt:
     gofmt -w .
 
+# Scan dependencies for known vulnerabilities
+scan:
+    grype dir:. --name aws-embedded-metrics-golang --fail-on medium
+    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
 # Tidy go.mod and go.sum
 tidy:
     go mod tidy

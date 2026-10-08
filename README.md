@@ -1,6 +1,7 @@
 # aws-embedded-metrics-golang
 
 [![ci](https://github.com/dangrier/aws-embedded-metrics-golang/actions/workflows/ci.yml/badge.svg)](https://github.com/dangrier/aws-embedded-metrics-golang/actions/workflows/ci.yml)
+[![security](https://github.com/dangrier/aws-embedded-metrics-golang/actions/workflows/security.yml/badge.svg)](https://github.com/dangrier/aws-embedded-metrics-golang/actions/workflows/security.yml)
 
 Go implementation of AWS CloudWatch [Embedded Metric Format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html)
 
