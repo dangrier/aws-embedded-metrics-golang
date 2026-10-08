@@ -39,7 +39,18 @@ func TestNew(t *testing.T) {
 			expected: &Logger{
 				out:               os.Stdout,
 				timestamp:         time.Now().UnixMilli(),
-				withoutDimensions: false,
+				withoutDimensions: true,
+			},
+		},
+		{
+			name: "with log group",
+			opts: []LoggerOption{
+				WithLogGroup("my-logs"),
+			},
+			expected: &Logger{
+				out:          os.Stdout,
+				timestamp:    time.Now().UnixMilli(),
+				logGroupName: "my-logs",
 			},
 		},
 	}
@@ -56,10 +67,19 @@ func TestNew(t *testing.T) {
 }
 
 // loggersEqual returns a non-nil error if the loggers do not match.
-// Currently it only checks that the loggers' output writer and timestamp match.
+// It checks the fields set by LoggerOptions: writer, timestamp,
+// withoutDimensions and log group.
 func loggersEqual(actual, expected *Logger) error {
 	if actual.out != expected.out {
 		return fmt.Errorf("output does not match")
+	}
+
+	if actual.withoutDimensions != expected.withoutDimensions {
+		return fmt.Errorf("withoutDimensions is %v, expected %v", actual.withoutDimensions, expected.withoutDimensions)
+	}
+
+	if actual.logGroupName != expected.logGroupName {
+		return fmt.Errorf("logGroupName is %q, expected %q", actual.logGroupName, expected.logGroupName)
 	}
 
 	if err := approxInt64(actual.timestamp, expected.timestamp, 100 /* ms */); err != nil {
