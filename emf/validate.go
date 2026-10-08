@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,9 +30,12 @@ const (
 var maxMetricMagnitude = math.Ldexp(1, 360)
 
 // registry tracks the root member names used by a Logger and all of its
-// Contexts, so metrics and dimensions don't overwrite each other.
+// Contexts, so metrics and dimensions don't overwrite each other. Its lock
+// guards all state shared by the Logger and its Contexts.
 type registry struct {
+	mu         sync.Mutex
 	onError    func(error)
+	pending    []error
 	dimensions map[string]bool
 	metrics    map[string]bool
 }
@@ -44,10 +48,33 @@ func newRegistry(onError func(error)) *registry {
 	}
 }
 
-func (r *registry) report(err error) {
-	if r.onError != nil {
+// do runs fn while holding the lock, then passes any errors fn reported to
+// the error handler. The handler runs after the lock is released, so it can
+// use the logger.
+func (r *registry) do(fn func()) {
+	r.mu.Lock()
+	fn()
+	errs := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+
+	r.handle(errs)
+}
+
+// handle passes errs to the error handler. It must be called without
+// holding the lock.
+func (r *registry) handle(errs []error) {
+	if r.onError == nil {
+		return
+	}
+	for _, err := range errs {
 		r.onError(err)
 	}
+}
+
+// report queues err for the error handler. It must be called inside do.
+func (r *registry) report(err error) {
+	r.pending = append(r.pending, err)
 }
 
 func (r *registry) invalid(format string, a ...any) {
