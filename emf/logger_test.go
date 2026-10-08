@@ -2,12 +2,11 @@ package emf_test
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"testing"
 
+	"github.com/dangrier/aws-embedded-metrics-golang/emf"
 	"github.com/kinbiko/jsonassert"
-	"github.com/prozz/aws-embedded-metrics-golang/emf"
 )
 
 func TestEmf(t *testing.T) {
@@ -219,12 +218,12 @@ func TestEmf(t *testing.T) {
 			logger.Log()
 
 			println(buf.String())
-			f, err := ioutil.ReadFile(tc.expected)
+			f, err := os.ReadFile(tc.expected)
 			if err != nil {
 				t.Fatal("unable to read file with expected json")
 			}
 
-			jsonassert.New(t).Assertf(buf.String(), string(f))
+			jsonassert.New(t).Assertf(buf.String(), "%s", string(f))
 		})
 	}
 
