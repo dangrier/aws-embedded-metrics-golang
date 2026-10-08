@@ -15,7 +15,7 @@ type Logger struct {
 	timestamp         int64
 	defaultContext    Context
 	contexts          []*Context
-	values            map[string]interface{}
+	values            map[string]any
 	withoutDimensions bool
 	logGroupName      string
 }
@@ -23,7 +23,7 @@ type Logger struct {
 // Context gives ability to add another MetricDirective section for Logger.
 type Context struct {
 	metricDirective MetricDirective
-	values          map[string]interface{}
+	values          map[string]any
 }
 
 // LoggerOption defines a function that can be used to customize a logger.
@@ -39,7 +39,7 @@ func WithWriter(w io.Writer) LoggerOption {
 // WithTimestamp customizes the timestamp used by a logger.
 func WithTimestamp(t time.Time) LoggerOption {
 	return func(l *Logger) {
-		l.timestamp = t.UnixNano() / int64(time.Millisecond)
+		l.timestamp = t.UnixMilli()
 	}
 }
 
@@ -65,7 +65,7 @@ func WithLogGroup(logGroup string) LoggerOption {
 func New(opts ...LoggerOption) *Logger {
 	l := Logger{
 		out:       os.Stdout,
-		timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+		timestamp: time.Now().UnixMilli(),
 	}
 
 	// apply any options
@@ -73,7 +73,7 @@ func New(opts ...LoggerOption) *Logger {
 		opt(&l)
 	}
 
-	values := make(map[string]interface{})
+	values := make(map[string]any)
 
 	if !l.withoutDimensions {
 		// set default properties for lambda function
@@ -269,7 +269,7 @@ func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Co
 	return c.put(name, value, unit)
 }
 
-func newContext(values map[string]interface{}, withoutDimensions bool) Context {
+func newContext(values map[string]any, withoutDimensions bool) Context {
 	var defaultDimensions []DimensionSet
 	if !withoutDimensions {
 		// set default dimensions for lambda function
@@ -290,7 +290,7 @@ func newContext(values map[string]interface{}, withoutDimensions bool) Context {
 	}
 }
 
-func (c *Context) put(name string, value interface{}, unit MetricUnit) *Context {
+func (c *Context) put(name string, value any, unit MetricUnit) *Context {
 	c.metricDirective.Metrics = append(c.metricDirective.Metrics, MetricDefinition{
 		Name: name,
 		Unit: unit,
