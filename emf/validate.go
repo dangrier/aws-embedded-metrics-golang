@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 )
 
 // ErrInvalid is wrapped by every error passed to the WithErrorHandler
@@ -19,6 +20,8 @@ const (
 	maxDimensionValueLen = 1024
 	maxDimensionSetSize  = 30
 	maxMetricsPerEvent   = 100
+	maxTimestampAge      = 14 * 24 * time.Hour
+	maxTimestampAhead    = 2 * time.Hour
 	metadataKey          = "_aws"
 )
 
@@ -98,6 +101,15 @@ func (r *registry) checkMetric(name string, value any, unit MetricUnit) bool {
 		return true
 	}
 	return false
+}
+
+// checkTimestamp reports a timestamp CloudWatch won't publish metrics for.
+// The log line is still written, since CloudWatch keeps it as a log event.
+func (r *registry) checkTimestamp(timestamp, now time.Time) {
+	if timestamp.Before(now.Add(-maxTimestampAge)) || timestamp.After(now.Add(maxTimestampAhead)) {
+		r.invalid("timestamp %s is more than 14 days in the past or 2 hours in the future, so CloudWatch will not publish these metrics",
+			timestamp.UTC().Format(time.RFC3339))
+	}
 }
 
 func (r *registry) checkProperty(key string) bool {

@@ -41,7 +41,9 @@ func WithWriter(w io.Writer) LoggerOption {
 	}
 }
 
-// WithTimestamp customizes the timestamp used by a logger.
+// WithTimestamp customizes the timestamp used by a logger. CloudWatch only
+// publishes metrics with a timestamp from 14 days in the past to 2 hours in
+// the future, checked when Log is called.
 func WithTimestamp(t time.Time) LoggerOption {
 	return func(l *Logger) {
 		l.timestamp = t.UnixMilli()
@@ -205,7 +207,9 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 
 // Log prints all Contexts and metric values to chosen output in Embedded Metric Format.
 // The spec allows at most 100 metrics per log event, so more than that are
-// split across several lines.
+// split across several lines. A timestamp outside the window CloudWatch
+// accepts (14 days in the past to 2 hours in the future) is reported to the
+// error handler, but the lines are still written.
 func (l *Logger) Log() {
 	var metrics []MetricDirective
 	if len(l.defaultContext.metricDirective.Metrics) > 0 {
@@ -217,6 +221,11 @@ func (l *Logger) Log() {
 		}
 	}
 
+	if len(metrics) == 0 {
+		return
+	}
+
+	l.registry.checkTimestamp(time.UnixMilli(l.timestamp), time.Now())
 	for event := range splitDirectives(metrics, maxMetricsPerEvent) {
 		l.write(event)
 	}
