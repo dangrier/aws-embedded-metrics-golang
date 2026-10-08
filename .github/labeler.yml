@@ -1,0 +1,18 @@
+# Labels added to PRs automatically, used to group release notes.
+# Add enhancement, bug or breaking by hand, or name the branch feat/... or fix/...
+ci:
+  - changed-files:
+      - any-glob-to-all-files: [".github/**", "Justfile"]
+
+documentation:
+  - changed-files:
+      - any-glob-to-all-files: ["**/*.md"]
+
+enhancement:
+  - head-branch: ["^feat/", "^feature/"]
+
+bug:
+  - head-branch: ["^fix/"]
+
+security:
+  - head-branch: ["^fix/aikido-security", "^security/"]
