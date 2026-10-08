@@ -67,6 +67,10 @@ future. If a `WithTimestamp` value is outside that window when `Log()` is called
 handler is told (wrapping `emf.ErrInvalid`), but the line is still written. CloudWatch keeps it
 as a log event, it just won't turn it into metrics.
 
+CloudWatch Logs rejects log lines over 1 MB, usually because of very large properties. If a
+line is over the limit, the error handler is told (wrapping `emf.ErrInvalid`), but the line
+is still written.
+
 A single call to `Log()` may write more than one line. The spec allows at most 100 metrics
 per log event, and CloudWatch drops every metric in an event that has more. So if you log
 more than 100 metrics at once (across all contexts), they are split across several lines of

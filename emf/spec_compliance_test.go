@@ -313,6 +313,53 @@ func TestTimestampWindow(t *testing.T) {
 	})
 }
 
+// TestEventSizeLimit checks lines over CloudWatch's 1 MB limit are
+// reported, once per line, and still written.
+func TestEventSizeLimit(t *testing.T) {
+	tcs := []struct {
+		name          string
+		propertyBytes int
+		metrics       int
+		reported      int
+	}{
+		{"small", 100, 1, 0},
+		{"just under 1 MB", 1<<20 - 1024, 1, 0},
+		{"2 MB", 2 << 20, 1, 1},
+		{"2 MB split across 2 lines", 2 << 20, 150, 2},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var errs []error
+			logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+				errs = append(errs, err)
+			})).Property("big", strings.Repeat("x", tc.propertyBytes))
+			for i := range tc.metrics {
+				logger.Metric(fmt.Sprintf("m%d", i), i)
+			}
+			logger.Log()
+
+			if buf.Len() < tc.propertyBytes {
+				t.Errorf("expected the lines to be written, got %d bytes", buf.Len())
+			}
+			if len(errs) != tc.reported {
+				t.Fatalf("expected %d errors, got %d: %v", tc.reported, len(errs), errs)
+			}
+			for _, err := range errs {
+				if !errors.Is(err, emf.ErrInvalid) {
+					t.Errorf("error %v does not wrap ErrInvalid", err)
+				}
+			}
+			if tc.reported == 0 {
+				for line := range bytes.Lines(buf.Bytes()) {
+					assertCompliant(t, line)
+				}
+			}
+		})
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
