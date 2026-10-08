@@ -25,7 +25,7 @@ bench count="6":
 
 # Compare benchmarks with a git ref, and fail on a regression
 bench-compare ref="main" rounds="10":
-    .github/scripts/bench-compare.sh {{ref}} {{rounds}}
+    go tool benchcompare -base {{ref}} -rounds {{rounds}}
 
 # Run go vet
 vet:

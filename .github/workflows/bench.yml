@@ -25,4 +25,4 @@ jobs:
       - name: Compare with base branch
         env:
           BASE_REF: origin/${{ github.base_ref }}
-        run: .github/scripts/bench-compare.sh "$BASE_REF" 10
+        run: go tool benchcompare -base "$BASE_REF" -rounds 10
