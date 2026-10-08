@@ -1,4 +1,22 @@
-// Package emf implements the spec available here: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
+// Package emf writes CloudWatch metrics in the AWS Embedded Metric Format
+// (EMF). Each Log call writes JSON log lines, and CloudWatch Logs turns them
+// into metrics, so no CloudWatch API calls are needed.
+//
+// Create a Logger with New, add metrics, dimensions and properties, then call
+// Log:
+//
+//	emf.New().
+//		Namespace("shop").
+//		Dimension("Service", "checkout").
+//		MetricAs("OrderTotal", 120, emf.Count).
+//		Log()
+//
+// Output always follows the EMF specification. Input that would break it is
+// skipped and reported to the WithErrorHandler handler, and the rest is still
+// logged. A Logger is safe to use from several goroutines at once.
+//
+// The specification is at
+// https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
 package emf
 
 import "encoding/json"
