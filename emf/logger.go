@@ -8,10 +8,12 @@ import (
 	"maps"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-// Logger for metrics with default Context.
+// Logger for metrics with default Context. A Logger and its Contexts are
+// safe to use from several goroutines at once.
 type Logger struct {
 	out               io.Writer
 	timestamp         int64
@@ -22,6 +24,7 @@ type Logger struct {
 	logGroupName      string
 	onError           func(error)
 	registry          *registry
+	writeMu           sync.Mutex
 }
 
 // Context gives ability to add another MetricDirective section for Logger.
@@ -67,6 +70,8 @@ func WithLogGroup(logGroup string) LoggerOption {
 // WithErrorHandler sets a function that is called when the logger skips
 // input that would break the EMF spec, or fails to write. Skipped input
 // errors wrap ErrInvalid. Without a handler, these errors are ignored.
+// The handler may use the logger. If the logger is used from several
+// goroutines, the handler may be called from several goroutines at once.
 func WithErrorHandler(fn func(error)) LoggerOption {
 	return func(l *Logger) {
 		l.onError = fn
@@ -130,35 +135,35 @@ func NewDimension(key, value string) Dimension {
 
 // Namespace sets namespace on default context.
 func (l *Logger) Namespace(namespace string) *Logger {
-	l.defaultContext.Namespace(namespace)
+	l.registry.do(func() { l.defaultContext.namespace(namespace) })
 	return l
 }
 
 // Property sets property. A property can't use the name of a metric or
 // dimension.
 func (l *Logger) Property(key, value string) *Logger {
-	if l.registry.checkProperty(key) {
-		l.values[key] = value
-	}
+	l.registry.do(func() {
+		if l.registry.checkProperty(key) {
+			l.values[key] = value
+		}
+	})
 	return l
 }
 
 // Dimension adds single dimension on default context.
 func (l *Logger) Dimension(key, value string) *Logger {
-	l.defaultContext.Dimension(key, value)
-	return l
+	return l.DimensionSet(NewDimension(key, value))
 }
 
 // DimensionSet adds multiple dimensions on default context.
 func (l *Logger) DimensionSet(dimensions ...Dimension) *Logger {
-	l.defaultContext.DimensionSet(dimensions...)
+	l.registry.do(func() { l.defaultContext.dimensionSet(dimensions) })
 	return l
 }
 
 // Metric puts int metric on default context.
 func (l *Logger) Metric(name string, value int) *Logger {
-	l.defaultContext.put(name, value, None)
-	return l
+	return l.MetricAs(name, value, None)
 }
 
 // Metrics puts all of the int metrics on default context.
@@ -168,8 +173,7 @@ func (l *Logger) Metrics(m map[string]int) *Logger {
 
 // MetricFloat puts float metric on default context.
 func (l *Logger) MetricFloat(name string, value float64) *Logger {
-	l.defaultContext.put(name, value, None)
-	return l
+	return l.MetricFloatAs(name, value, None)
 }
 
 // MetricsFloat puts all of the float metrics on default context.
@@ -179,29 +183,33 @@ func (l *Logger) MetricsFloat(m map[string]float64) *Logger {
 
 // MetricAs puts int metric with MetricUnit on default context.
 func (l *Logger) MetricAs(name string, value int, unit MetricUnit) *Logger {
-	l.defaultContext.put(name, value, unit)
+	l.registry.do(func() { l.defaultContext.put(name, value, unit) })
 	return l
 }
 
 // MetricsAs puts all of the int metrics with MetricUnit on default context.
 func (l *Logger) MetricsAs(m map[string]int, unit MetricUnit) *Logger {
-	for name, value := range m {
-		l.defaultContext.put(name, value, unit)
-	}
+	l.registry.do(func() {
+		for name, value := range m {
+			l.defaultContext.put(name, value, unit)
+		}
+	})
 	return l
 }
 
 // MetricFloatAs puts float metric with MetricUnit on default context.
 func (l *Logger) MetricFloatAs(name string, value float64, unit MetricUnit) *Logger {
-	l.defaultContext.put(name, value, unit)
+	l.registry.do(func() { l.defaultContext.put(name, value, unit) })
 	return l
 }
 
 // MetricsFloatAs puts all of the float metrics with MetricUnit on default context.
 func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
-	for name, value := range m {
-		l.defaultContext.put(name, value, unit)
-	}
+	l.registry.do(func() {
+		for name, value := range m {
+			l.defaultContext.put(name, value, unit)
+		}
+	})
 	return l
 }
 
@@ -211,6 +219,39 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 // accepts (14 days in the past to 2 hours in the future) is reported to the
 // error handler, but the lines are still written.
 func (l *Logger) Log() {
+	// Take a snapshot under the lock, then encode outside it so concurrent
+	// Log calls don't wait on each other. Writing has its own lock, so lines
+	// are never mixed together.
+	var events []map[string]any
+	l.registry.do(func() { events = l.snapshot() })
+
+	var errs []error
+	lines := make([][]byte, 0, len(events))
+	for _, values := range events {
+		buf, err := json.Marshal(values)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("emf: encoding metrics: %w", err))
+			continue
+		}
+		lines = append(lines, append(buf, '\n'))
+	}
+
+	l.writeMu.Lock()
+	for _, line := range lines {
+		if _, err := l.out.Write(line); err != nil {
+			errs = append(errs, fmt.Errorf("emf: writing metrics: %w", err))
+		}
+	}
+	l.writeMu.Unlock()
+
+	l.registry.handle(errs)
+}
+
+// snapshot returns the root object of each log event to write. It must be
+// called while holding the registry lock. Metric and dimension slices are
+// only ever appended to, so the snapshot stays valid after the lock is
+// released.
+func (l *Logger) snapshot() []map[string]any {
 	var metrics []MetricDirective
 	if len(l.defaultContext.metricDirective.Metrics) > 0 {
 		metrics = append(metrics, l.defaultContext.metricDirective)
@@ -222,13 +263,15 @@ func (l *Logger) Log() {
 	}
 
 	if len(metrics) == 0 {
-		return
+		return nil
 	}
 
 	l.registry.checkTimestamp(time.UnixMilli(l.timestamp), time.Now())
+	var events []map[string]any
 	for event := range splitDirectives(metrics, maxMetricsPerEvent) {
-		l.write(event)
+		events = append(events, l.eventValues(event))
 	}
+	return events
 }
 
 // splitDirectives yields log events with at most limit metrics each. A
@@ -259,9 +302,10 @@ func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricD
 	}
 }
 
-// write prints one log event. It holds every property and dimension, but
-// only the metric values its directives refer to.
-func (l *Logger) write(directives []MetricDirective) {
+// eventValues returns the root object of one log event. It holds every
+// property and dimension, but only the metric values its directives refer
+// to.
+func (l *Logger) eventValues(directives []MetricDirective) map[string]any {
 	values := maps.Clone(l.values)
 	maps.DeleteFunc(values, func(key string, _ any) bool {
 		return l.registry.metrics[key]
@@ -276,29 +320,22 @@ func (l *Logger) write(directives []MetricDirective) {
 		Metrics:      directives,
 		LogGroupName: l.logGroupName,
 	}
-
-	buf, err := json.Marshal(values)
-	if err != nil {
-		l.registry.report(fmt.Errorf("emf: encoding metrics: %w", err))
-		return
-	}
-	if _, err := fmt.Fprintln(l.out, string(buf)); err != nil {
-		l.registry.report(fmt.Errorf("emf: writing metrics: %w", err))
-	}
+	return values
 }
 
 // NewContext creates new context for given logger.
 func (l *Logger) NewContext() *Context {
-	c := newContext(l.values, l.withoutDimensions, l.registry)
-	l.contexts = append(l.contexts, &c)
+	var c Context
+	l.registry.do(func() {
+		c = newContext(l.values, l.withoutDimensions, l.registry)
+		l.contexts = append(l.contexts, &c)
+	})
 	return &c
 }
 
 // Namespace sets namespace on given context.
 func (c *Context) Namespace(namespace string) *Context {
-	if c.registry.checkNamespace(namespace) {
-		c.metricDirective.Namespace = namespace
-	}
+	c.registry.do(func() { c.namespace(namespace) })
 	return c
 }
 
@@ -310,8 +347,43 @@ func (c *Context) Dimension(key, value string) *Context {
 // DimensionSet adds multiple dimensions on given context. If any dimension
 // is invalid, the whole set is skipped.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
+	c.registry.do(func() { c.dimensionSet(dimensions) })
+	return c
+}
+
+// Metric puts int metric on given context.
+func (c *Context) Metric(name string, value int) *Context {
+	return c.MetricAs(name, value, None)
+}
+
+// MetricFloat puts float metric on given context.
+func (c *Context) MetricFloat(name string, value float64) *Context {
+	return c.MetricFloatAs(name, value, None)
+}
+
+// MetricAs puts int metric with MetricUnit on given context.
+func (c *Context) MetricAs(name string, value int, unit MetricUnit) *Context {
+	c.registry.do(func() { c.put(name, value, unit) })
+	return c
+}
+
+// MetricFloatAs puts float metric with MetricUnit on given context.
+func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Context {
+	c.registry.do(func() { c.put(name, value, unit) })
+	return c
+}
+
+// The methods below must be called while holding the registry lock.
+
+func (c *Context) namespace(namespace string) {
+	if c.registry.checkNamespace(namespace) {
+		c.metricDirective.Namespace = namespace
+	}
+}
+
+func (c *Context) dimensionSet(dimensions []Dimension) {
 	if !c.registry.checkDimensionSet(dimensions) {
-		return c
+		return
 	}
 	set := make(DimensionSet, 0, len(dimensions))
 	for _, d := range dimensions {
@@ -320,27 +392,6 @@ func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
 		c.registry.dimensions[d.Key] = true
 	}
 	c.metricDirective.Dimensions = append(c.metricDirective.Dimensions, set)
-	return c
-}
-
-// Metric puts int metric on given context.
-func (c *Context) Metric(name string, value int) *Context {
-	return c.put(name, value, None)
-}
-
-// MetricFloat puts float metric on given context.
-func (c *Context) MetricFloat(name string, value float64) *Context {
-	return c.put(name, value, None)
-}
-
-// MetricAs puts int metric with MetricUnit on given context.
-func (c *Context) MetricAs(name string, value int, unit MetricUnit) *Context {
-	return c.put(name, value, unit)
-}
-
-// MetricFloatAs puts float metric with MetricUnit on given context.
-func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Context {
-	return c.put(name, value, unit)
 }
 
 func newContext(values map[string]any, withoutDimensions bool, reg *registry) Context {
@@ -367,9 +418,9 @@ func newContext(values map[string]any, withoutDimensions bool, reg *registry) Co
 	}
 }
 
-func (c *Context) put(name string, value any, unit MetricUnit) *Context {
+func (c *Context) put(name string, value any, unit MetricUnit) {
 	if !c.registry.checkMetric(name, value, unit) {
-		return c
+		return
 	}
 	c.registry.metrics[name] = true
 	c.metricDirective.Metrics = append(c.metricDirective.Metrics, MetricDefinition{
@@ -377,5 +428,4 @@ func (c *Context) put(name string, value any, unit MetricUnit) *Context {
 		Unit: unit,
 	})
 	c.values[name] = value
-	return c
 }
