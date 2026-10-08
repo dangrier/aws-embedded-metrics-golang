@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -202,6 +204,8 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 }
 
 // Log prints all Contexts and metric values to chosen output in Embedded Metric Format.
+// The spec allows at most 100 metrics per log event, so more than that are
+// split across several lines.
 func (l *Logger) Log() {
 	var metrics []MetricDirective
 	if len(l.defaultContext.metricDirective.Metrics) > 0 {
@@ -213,16 +217,58 @@ func (l *Logger) Log() {
 		}
 	}
 
-	if len(metrics) == 0 {
-		return
+	for event := range splitDirectives(metrics, maxMetricsPerEvent) {
+		l.write(event)
 	}
+}
 
-	l.values[metadataKey] = Metadata{
+// splitDirectives yields log events with at most limit metrics each. A
+// directive with too many metrics is split into several directives with the
+// same namespace and dimensions.
+func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricDirective] {
+	return func(yield func([]MetricDirective) bool) {
+		var event []MetricDirective
+		count := 0
+		for _, d := range directives {
+			for remaining := d.Metrics; len(remaining) > 0; {
+				n := min(limit-count, len(remaining))
+				part := d
+				part.Metrics, remaining = remaining[:n], remaining[n:]
+				event = append(event, part)
+				count += n
+				if count == limit {
+					if !yield(event) {
+						return
+					}
+					event, count = nil, 0
+				}
+			}
+		}
+		if len(event) > 0 {
+			yield(event)
+		}
+	}
+}
+
+// write prints one log event. It holds every property and dimension, but
+// only the metric values its directives refer to.
+func (l *Logger) write(directives []MetricDirective) {
+	values := maps.Clone(l.values)
+	maps.DeleteFunc(values, func(key string, _ any) bool {
+		return l.registry.metrics[key]
+	})
+	for _, d := range directives {
+		for _, m := range d.Metrics {
+			values[m.Name] = l.values[m.Name]
+		}
+	}
+	values[metadataKey] = Metadata{
 		Timestamp:    l.timestamp,
-		Metrics:      metrics,
+		Metrics:      directives,
 		LogGroupName: l.logGroupName,
 	}
-	buf, err := json.Marshal(l.values)
+
+	buf, err := json.Marshal(values)
 	if err != nil {
 		l.registry.report(fmt.Errorf("emf: encoding metrics: %w", err))
 		return

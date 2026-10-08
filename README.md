@@ -62,6 +62,13 @@ Input that would break it is skipped, and the rest is still logged. This include
 values, invalid names, unknown units, and a name used for both a metric and a dimension.
 Use `WithErrorHandler` to find out what was skipped. Those errors wrap `emf.ErrInvalid`.
 
+A single call to `Log()` may write more than one line. The spec allows at most 100 metrics
+per log event, and CloudWatch drops every metric in an event that has more. So if you log
+more than 100 metrics at once (across all contexts), they are split across several lines of
+up to 100 metrics each. Every line keeps the same timestamp, properties and dimensions, and
+each metric keeps its own namespace and dimensions. If your code reads the output (in tests,
+for example), expect one or more lines per `Log()`.
+
 Functions for reporting metrics:
 
 ```

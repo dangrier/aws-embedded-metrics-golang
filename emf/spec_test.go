@@ -205,12 +205,7 @@ func checkMetricValue(add func(string, ...any), name string, n json.Number) {
 }
 
 func printableASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			return false
-		}
-	}
-	return true
+	return !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r > 0x7e })
 }
 
 func jsonType(v any) string {
