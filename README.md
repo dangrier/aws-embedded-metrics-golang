@@ -17,7 +17,7 @@ Supports namespaces, setting dimensions and properties as well as different cont
 
 ## Installation
 
-Requires Go 1.24 or newer.
+Requires Go 1.27 or newer.
 
 ```shell
 go get github.com/dangrier/aws-embedded-metrics-golang
