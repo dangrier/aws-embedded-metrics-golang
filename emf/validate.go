@@ -21,6 +21,7 @@ const (
 	maxDimensionValueLen = 1024
 	maxDimensionSetSize  = 30
 	maxMetricsPerEvent   = 100
+	maxValuesPerMetric   = 100
 	maxTimestampAge      = 14 * 24 * time.Hour
 	maxTimestampAhead    = 2 * time.Hour
 	maxEventBytes        = 1 << 20 // 1 MB, CloudWatch Logs' event size limit
@@ -38,14 +39,15 @@ type registry struct {
 	onError    func(error)
 	pending    []error
 	dimensions map[string]bool
-	metrics    map[string]bool
+	metrics    map[string]any   // the first value of each metric
+	more       map[string][]any // later values of repeated metrics, made when first needed
 }
 
 func newRegistry(onError func(error)) *registry {
 	return &registry{
 		onError:    onError,
 		dimensions: make(map[string]bool),
-		metrics:    make(map[string]bool),
+		metrics:    make(map[string]any),
 	}
 }
 
@@ -101,7 +103,7 @@ func (r *registry) checkDimensionSet(dimensions []Dimension) bool {
 			r.invalid("skipped dimension set: key %q must be 1 to %d printable ASCII characters, not only whitespace, and not start with ':'", d.Key, maxDimensionKeyLen)
 		case d.Key == metadataKey:
 			r.invalid("skipped dimension set: key %q is reserved", d.Key)
-		case r.metrics[d.Key]:
+		case r.isMetric(d.Key):
 			r.invalid("skipped dimension set: key %q is already a metric", d.Key)
 		case !validString(d.Value, maxDimensionValueLen):
 			r.invalid("skipped dimension set: value %q for key %q must be 1 to %d printable ASCII characters, not only whitespace", d.Value, d.Key, maxDimensionValueLen)
@@ -113,7 +115,38 @@ func (r *registry) checkDimensionSet(dimensions []Dimension) bool {
 	return true
 }
 
-func (r *registry) checkMetric(name string, value any, unit MetricUnit) bool {
+func (r *registry) isMetric(name string) bool {
+	_, ok := r.metrics[name]
+	return ok
+}
+
+// valueCount returns how many values a metric has.
+func (r *registry) valueCount(name string) int {
+	return 1 + len(r.more[name])
+}
+
+// valuesInRound returns a metric's values for one round of log events, at
+// most limit per round. A metric with one value is logged as a number, and
+// otherwise as a list.
+func (r *registry) valuesInRound(name string, round, limit int) any {
+	more := r.more[name]
+	if len(more) == 0 {
+		return r.metrics[name]
+	}
+	start := round * limit
+	end := min(start+limit, 1+len(more))
+	part := make([]any, 0, end-start)
+	for i := start; i < end; i++ {
+		if i == 0 {
+			part = append(part, r.metrics[name])
+		} else {
+			part = append(part, more[i-1])
+		}
+	}
+	return part
+}
+
+func (r *registry) checkMetricName(name string, unit MetricUnit) bool {
 	switch {
 	case !validString(name, maxNameLen):
 		r.invalid("skipped metric %q: name must be 1 to %d printable ASCII characters, not only whitespace", name, maxNameLen)
@@ -123,12 +156,18 @@ func (r *registry) checkMetric(name string, value any, unit MetricUnit) bool {
 		r.invalid("skipped metric %q: name is already a dimension", name)
 	case !validUnit(unit):
 		r.invalid("skipped metric %q: unknown unit %q", name, unit)
-	case !validValue(value):
-		r.invalid("skipped metric %q: value %v must be a finite number between -2^360 and 2^360", name, value)
 	default:
 		return true
 	}
 	return false
+}
+
+func (r *registry) checkMetricValue(name string, value any) bool {
+	if !validValue(value) {
+		r.invalid("skipped metric %q: value %v must be a finite number between -2^360 and 2^360", name, value)
+		return false
+	}
+	return true
 }
 
 // checkTimestamp reports a timestamp CloudWatch won't publish metrics for.
@@ -144,7 +183,7 @@ func (r *registry) checkProperty(key string) bool {
 	switch {
 	case key == metadataKey:
 		r.invalid("skipped property %q: key is reserved", key)
-	case r.metrics[key]:
+	case r.isMetric(key):
 		r.invalid("skipped property %q: key is already a metric", key)
 	case r.dimensions[key]:
 		r.invalid("skipped property %q: key is already a dimension", key)

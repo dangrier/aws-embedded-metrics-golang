@@ -183,7 +183,7 @@ func (l *Logger) MetricsFloat(m map[string]float64) *Logger {
 
 // MetricAs puts int metric with MetricUnit on default context.
 func (l *Logger) MetricAs(name string, value int, unit MetricUnit) *Logger {
-	l.registry.do(func() { l.defaultContext.put(name, value, unit) })
+	l.registry.do(func() { l.defaultContext.put(name, value, unit, standardResolution) })
 	return l
 }
 
@@ -191,7 +191,7 @@ func (l *Logger) MetricAs(name string, value int, unit MetricUnit) *Logger {
 func (l *Logger) MetricsAs(m map[string]int, unit MetricUnit) *Logger {
 	l.registry.do(func() {
 		for name, value := range m {
-			l.defaultContext.put(name, value, unit)
+			l.defaultContext.put(name, value, unit, standardResolution)
 		}
 	})
 	return l
@@ -199,7 +199,7 @@ func (l *Logger) MetricsAs(m map[string]int, unit MetricUnit) *Logger {
 
 // MetricFloatAs puts float metric with MetricUnit on default context.
 func (l *Logger) MetricFloatAs(name string, value float64, unit MetricUnit) *Logger {
-	l.registry.do(func() { l.defaultContext.put(name, value, unit) })
+	l.registry.do(func() { l.defaultContext.put(name, value, unit, standardResolution) })
 	return l
 }
 
@@ -207,15 +207,15 @@ func (l *Logger) MetricFloatAs(name string, value float64, unit MetricUnit) *Log
 func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 	l.registry.do(func() {
 		for name, value := range m {
-			l.defaultContext.put(name, value, unit)
+			l.defaultContext.put(name, value, unit, standardResolution)
 		}
 	})
 	return l
 }
 
 // Log prints all Contexts and metric values to chosen output in Embedded Metric Format.
-// The spec allows at most 100 metrics per log event, so more than that are
-// split across several lines. A timestamp outside the window CloudWatch
+// The spec allows at most 100 metrics per log event, and 100 values per
+// metric, so more than that are split across several lines. A timestamp outside the window CloudWatch
 // accepts (14 days in the past to 2 hours in the future), or a line over
 // CloudWatch's 1 MB limit, is reported to the error handler, but the lines
 // are still written.
@@ -272,11 +272,44 @@ func (l *Logger) snapshot() []map[string]any {
 	}
 
 	l.registry.checkTimestamp(time.UnixMilli(l.timestamp), time.Now())
+
+	// A metric with more than 100 values is logged over several rounds of
+	// events, with up to 100 of its values in each round.
+	rounds := 1
+	for name := range l.registry.more {
+		rounds = max(rounds, (l.registry.valueCount(name)+maxValuesPerMetric-1)/maxValuesPerMetric)
+	}
+
 	var events []map[string]any
-	for event := range splitDirectives(metrics, maxMetricsPerEvent) {
-		events = append(events, l.eventValues(event))
+	for round := range rounds {
+		directives := metrics
+		if round > 0 {
+			directives = l.directivesInRound(metrics, round)
+		}
+		for event := range splitDirectives(directives, maxMetricsPerEvent) {
+			events = append(events, l.eventValues(event, round))
+		}
 	}
 	return events
+}
+
+// directivesInRound returns the directives with only the metrics that still
+// have values to log in the given round.
+func (l *Logger) directivesInRound(directives []MetricDirective, round int) []MetricDirective {
+	var out []MetricDirective
+	for _, d := range directives {
+		var metrics []MetricDefinition
+		for _, m := range d.Metrics {
+			if l.registry.valueCount(m.Name) > round*maxValuesPerMetric {
+				metrics = append(metrics, m)
+			}
+		}
+		if len(metrics) > 0 {
+			d.Metrics = metrics
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // splitDirectives yields log events with at most limit metrics each. A
@@ -308,16 +341,18 @@ func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricD
 }
 
 // eventValues returns the root object of one log event. It holds every
-// property and dimension, but only the metric values its directives refer
-// to.
-func (l *Logger) eventValues(directives []MetricDirective) map[string]any {
-	values := maps.Clone(l.values)
-	maps.DeleteFunc(values, func(key string, _ any) bool {
-		return l.registry.metrics[key]
-	})
+// property and dimension, and the values for the round of the metrics its
+// directives refer to.
+func (l *Logger) eventValues(directives []MetricDirective, round int) map[string]any {
+	size := len(l.values) + 1
+	for _, d := range directives {
+		size += len(d.Metrics)
+	}
+	values := make(map[string]any, size)
+	maps.Copy(values, l.values)
 	for _, d := range directives {
 		for _, m := range d.Metrics {
-			values[m.Name] = l.values[m.Name]
+			values[m.Name] = l.registry.valuesInRound(m.Name, round, maxValuesPerMetric)
 		}
 	}
 	values[metadataKey] = Metadata{
@@ -368,13 +403,13 @@ func (c *Context) MetricFloat(name string, value float64) *Context {
 
 // MetricAs puts int metric with MetricUnit on given context.
 func (c *Context) MetricAs(name string, value int, unit MetricUnit) *Context {
-	c.registry.do(func() { c.put(name, value, unit) })
+	c.registry.do(func() { c.put(name, value, unit, standardResolution) })
 	return c
 }
 
 // MetricFloatAs puts float metric with MetricUnit on given context.
 func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Context {
-	c.registry.do(func() { c.put(name, value, unit) })
+	c.registry.do(func() { c.put(name, value, unit, standardResolution) })
 	return c
 }
 
@@ -421,16 +456,4 @@ func newContext(values map[string]any, withoutDimensions bool, reg *registry) Co
 		values:   values,
 		registry: reg,
 	}
-}
-
-func (c *Context) put(name string, value any, unit MetricUnit) {
-	if !c.registry.checkMetric(name, value, unit) {
-		return
-	}
-	c.registry.metrics[name] = true
-	c.metricDirective.Metrics = append(c.metricDirective.Metrics, MetricDefinition{
-		Name: name,
-		Unit: unit,
-	})
-	c.values[name] = value
 }

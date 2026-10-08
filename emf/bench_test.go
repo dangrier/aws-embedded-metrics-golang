@@ -61,6 +61,26 @@ func BenchmarkAddMetrics(b *testing.B) {
 	}
 }
 
+// BenchmarkPutValues measures logging a metric with a list of values,
+// including one long enough to be split across lines.
+func BenchmarkPutValues(b *testing.B) {
+	for _, n := range []int{10, 250} {
+		b.Run(fmt.Sprintf("values=%d", n), func(b *testing.B) {
+			values := make([]float64, n)
+			for i := range values {
+				values[i] = float64(i)
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				emf.New(emf.WithWriter(io.Discard), emf.WithoutDimensions()).
+					PutValues("Latency", values, emf.Unit(emf.Milliseconds)).
+					Log()
+			}
+		})
+	}
+}
+
 // BenchmarkLogParallel measures many goroutines logging through one shared
 // logger, which contends on its lock.
 func BenchmarkLogParallel(b *testing.B) {

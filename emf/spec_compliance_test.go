@@ -142,6 +142,19 @@ func FuzzSpecCompliance(f *testing.F) {
 		for i := range int(extraMetrics) {
 			ctx.Metric(fmt.Sprintf("extra%d", i), i)
 		}
+
+		// Repeat names, lists of values and high resolution, including
+		// lists long enough to be split.
+		var opts []emf.MetricOption
+		if extraMetrics%2 == 1 {
+			opts = append(opts, emf.HighResolution())
+		}
+		logger.Put(intName, floatValue, opts...)
+		values := make([]float64, int(extraMetrics)%150)
+		for i := range values {
+			values[i] = floatValue * float64(i)
+		}
+		ctx.PutValues(floatName, values, append(opts, emf.Unit(emf.MetricUnit(unit)))...)
 		logger.Log()
 
 		if buf.Len() == 0 {

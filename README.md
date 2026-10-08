@@ -11,6 +11,7 @@ creates the metrics for you, so there are no CloudWatch API calls, credentials o
 code, and nothing to mock in tests.
 
 - Simple, chainable API for metrics, dimensions, properties and namespaces
+- Lists of values and high-resolution (1 second) metrics
 - Output always follows the EMF spec, and is tested against AWS's JSON Schema and fuzzed
 - Bad input is skipped and reported, instead of silently breaking the whole log line
 - Safe to use from several goroutines at once
@@ -65,8 +66,35 @@ logger.Metrics(map[string]int{"Hits": 9, "Misses": 1})  // several at once
 logger.MetricsFloatAs(map[string]float64{"P50": 10, "P99": 48}, emf.Milliseconds)
 ```
 
+`Put` and `PutValues` take options for the unit and resolution:
+
+```go
+logger.Put("Latency", 12.5, emf.Unit(emf.Milliseconds))
+logger.Put("QueueDepth", 42, emf.Unit(emf.Count), emf.HighResolution())
+logger.PutValues("Latency", []float64{12.5, 8.1, 30.2}, emf.Unit(emf.Milliseconds))
+```
+
 Every [CloudWatch unit](https://pkg.go.dev/github.com/dangrier/aws-embedded-metrics-golang/emf#MetricUnit)
 has a constant, like `emf.Seconds`, `emf.Bytes`, `emf.Percent` and `emf.CountSecond`.
+
+### Lists of values
+
+A metric can have a list of values, such as the latency of each request in a batch. CloudWatch keeps
+every value, so statistics like percentiles stay accurate. Use `PutValues`, or log the same name
+more than once and the values are collected:
+
+```go
+logger.Put("Latency", 12.5).Put("Latency", 8.1) // logs "Latency":[12.5,8.1]
+```
+
+A repeated name must use the same unit and resolution, or the new value is skipped and reported.
+The same name in two contexts is published in both namespaces, with all of its values. The spec
+allows at most 100 values per metric, so longer lists are split across several lines.
+
+### High resolution
+
+`emf.HighResolution()` stores a metric per second instead of per minute, so you can graph and alarm
+on it at 1 second intervals. High-resolution metrics cost more.
 
 ### Dimensions
 
@@ -166,12 +194,12 @@ emf.New(emf.WithErrorHandler(func(err error) {
 }))
 ```
 
-### More than 100 metrics
+### More than 100 metrics or values
 
 A single call to `Log()` may write more than one line. The spec allows at most 100 metrics per log
-event, and CloudWatch drops every metric in an event that has more. So if you log more than 100
-metrics at once (across all contexts), they are split across several lines of up to 100 metrics
-each. Every line keeps the same timestamp, properties and dimensions, and each metric keeps its own
+event, and 100 values per metric, and CloudWatch drops every metric in an event that has more. So if
+you log more than 100 metrics at once (across all contexts), or a metric with more than 100 values,
+they are split across several lines. Every line keeps the same timestamp, properties and dimensions, and each metric keeps its own
 namespace and dimensions. If your code reads the output (in tests, for example), expect one or more
 lines per `Log()`.
 
