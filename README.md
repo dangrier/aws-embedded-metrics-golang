@@ -1,9 +1,10 @@
 # aws-embedded-metrics-golang
 
-![test](https://github.com/prozz/aws-embedded-metrics-golang/workflows/test/badge.svg?branch=master)
-![golangci-lint](https://github.com/prozz/aws-embedded-metrics-golang/workflows/lint/badge.svg?branch=master)
+![ci](https://github.com/dangrier/aws-embedded-metrics-golang/actions/workflows/ci.yml/badge.svg?branch=main)
 
 Go implementation of AWS CloudWatch [Embedded Metric Format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html)
+
+Forked from [prozz/aws-embedded-metrics-golang](https://github.com/prozz/aws-embedded-metrics-golang).
 
 It's aim is to simplify reporting metrics to CloudWatch:
 
@@ -15,8 +16,10 @@ Supports namespaces, setting dimensions and properties as well as different cont
 
 ## Installation
 
+Requires Go 1.24 or newer.
+
 ```shell
-go get github.com/prozz/aws-embedded-metrics-golang
+go get github.com/dangrier/aws-embedded-metrics-golang
 ```
 
 ## Usage

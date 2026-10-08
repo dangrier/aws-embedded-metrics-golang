@@ -37,8 +37,8 @@ func TestNew(t *testing.T) {
 				WithoutDimensions(),
 			},
 			expected: &Logger{
-				out:       os.Stdout,
-				timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+				out:               os.Stdout,
+				timestamp:         time.Now().UnixNano() / int64(time.Millisecond),
 				withoutDimensions: false,
 			},
 		},
