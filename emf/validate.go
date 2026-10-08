@@ -18,6 +18,7 @@ const (
 	maxDimensionKeyLen   = 250
 	maxDimensionValueLen = 1024
 	maxDimensionSetSize  = 30
+	maxMetricsPerEvent   = 100
 	metadataKey          = "_aws"
 )
 
@@ -119,12 +120,7 @@ func validString(s string, maxLen int) bool {
 	if len(s) < 1 || len(s) > maxLen || strings.TrimSpace(s) == "" {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			return false
-		}
-	}
-	return true
+	return !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r > 0x7e })
 }
 
 func validValue(value any) bool {

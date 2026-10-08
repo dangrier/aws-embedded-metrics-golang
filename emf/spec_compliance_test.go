@@ -2,6 +2,7 @@ package emf_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -112,28 +113,35 @@ func TestSpecCompliance(t *testing.T) {
 // output is always spec compliant. Anything invalid must be skipped and
 // reported to the error handler. Run it with: just fuzz
 func FuzzSpecCompliance(f *testing.F) {
-	f.Add("ns", "dimKey", "dimValue", "intMetric", 1, "floatMetric", 1.5, "None", "prop")
-	f.Add("aws-embedded-metrics", "Service", "api", "latency", 250, "size", 1024.0, "Milliseconds", "requestId")
-	f.Add("ns", "same", "value", "same", 1, "other", 2.0, "Count", "p")
-	f.Add("ns", "d", "v", "m", 1, "f", math.NaN(), "None", "p")
-	f.Add("ns", "d", "v", "m", 1, "f", math.Inf(-1), "None", "p")
-	f.Add("ns", "d", "v", "m", 1, "f", 1e300, "None", "p")
-	f.Add("ns", "d", "v", "_aws", 1, "f", 1.0, "None", "_aws")
-	f.Add(" ", ":d", "", "", 1, "\x00", 1.0, "Parsecs", "m")
+	f.Add("ns", "dimKey", "dimValue", "intMetric", 1, "floatMetric", 1.5, "None", "prop", uint8(0))
+	f.Add("aws-embedded-metrics", "Service", "api", "latency", 250, "size", 1024.0, "Milliseconds", "requestId", uint8(0))
+	f.Add("ns", "same", "value", "same", 1, "other", 2.0, "Count", "p", uint8(0))
+	f.Add("ns", "d", "v", "m", 1, "f", math.NaN(), "None", "p", uint8(0))
+	f.Add("ns", "d", "v", "m", 1, "f", math.Inf(-1), "None", "p", uint8(0))
+	f.Add("ns", "d", "v", "m", 1, "f", 1e300, "None", "p", uint8(0))
+	f.Add("ns", "d", "v", "_aws", 1, "f", 1.0, "None", "_aws", uint8(0))
+	f.Add(" ", ":d", "", "", 1, "\x00", 1.0, "Parsecs", "m", uint8(0))
+	f.Add("ns", "d", "v", "m", 1, "f", 1.0, "None", "p", uint8(98))
+	f.Add("ns", "d", "v", "m", 1, "f", 1.0, "None", "p", uint8(255))
 
 	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, intName string, intValue int,
-		floatName string, floatValue float64, unit, propKey string) {
+		floatName string, floatValue float64, unit, propKey string, extraMetrics uint8) {
 		var buf bytes.Buffer
 		var errs []error
-		emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
 			errs = append(errs, err)
-		})).
+		}))
+		logger.
 			Namespace(namespace).
 			Dimension(dimKey, dimValue).
 			MetricAs(intName, intValue, emf.MetricUnit(unit)).
 			MetricFloatAs(floatName, floatValue, emf.MetricUnit(unit)).
-			Property(propKey, "value").
-			Log()
+			Property(propKey, "value")
+		ctx := logger.NewContext().Dimension(dimKey, dimValue)
+		for i := range int(extraMetrics) {
+			ctx.Metric(fmt.Sprintf("extra%d", i), i)
+		}
+		logger.Log()
 
 		if buf.Len() == 0 {
 			// Both metrics were skipped, so they must have been reported.
@@ -142,7 +150,9 @@ func FuzzSpecCompliance(f *testing.F) {
 			}
 			return
 		}
-		assertCompliant(t, buf.Bytes())
+		for line := range bytes.Lines(buf.Bytes()) {
+			assertCompliant(t, line)
+		}
 		for _, err := range errs {
 			if !errors.Is(err, emf.ErrInvalid) {
 				t.Errorf("error %v does not wrap ErrInvalid", err)
@@ -232,6 +242,92 @@ func TestErrorHandler(t *testing.T) {
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// TestSplitsLargeLogs checks more than 100 metrics are split into several
+// compliant log lines, with every metric logged exactly once.
+func TestSplitsLargeLogs(t *testing.T) {
+	tcs := []struct {
+		name          string
+		defaultCount  int
+		contextCount  int
+		expectedLines int
+	}{
+		{"exactly 100", 100, 0, 1},
+		{"101 in one directive", 101, 0, 2},
+		{"250 in one directive", 250, 0, 3},
+		{"split across contexts", 60, 60, 2},
+		{"context only", 0, 201, 3},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions()).
+				Namespace("default-ns").
+				Dimension("d", "v").
+				Property("p", "x")
+			for i := range tc.defaultCount {
+				logger.Metric(fmt.Sprintf("default%d", i), i)
+			}
+			ctx := logger.NewContext().Namespace("context-ns").Dimension("c", "w")
+			for i := range tc.contextCount {
+				ctx.Metric(fmt.Sprintf("context%d", i), i)
+			}
+			logger.Log()
+
+			type metric struct {
+				namespace string
+				dims      string
+				value     any
+			}
+			seen := map[string]metric{}
+			lines := 0
+			for line := range bytes.Lines(buf.Bytes()) {
+				lines++
+				assertCompliant(t, line)
+
+				var doc map[string]any
+				if err := json.Unmarshal(line, &doc); err != nil {
+					t.Fatal(err)
+				}
+				if doc["p"] != "x" {
+					t.Errorf("line %d is missing property p", lines)
+				}
+				meta := doc["_aws"].(map[string]any)
+				for _, d := range meta["CloudWatchMetrics"].([]any) {
+					dir := d.(map[string]any)
+					dims := fmt.Sprint(dir["Dimensions"])
+					for _, m := range dir["Metrics"].([]any) {
+						name := m.(map[string]any)["Name"].(string)
+						if _, dup := seen[name]; dup {
+							t.Errorf("metric %s logged more than once", name)
+						}
+						seen[name] = metric{dir["Namespace"].(string), dims, doc[name]}
+					}
+				}
+			}
+
+			if lines != tc.expectedLines {
+				t.Errorf("expected %d lines, got %d", tc.expectedLines, lines)
+			}
+			if len(seen) != tc.defaultCount+tc.contextCount {
+				t.Errorf("expected %d metrics, got %d", tc.defaultCount+tc.contextCount, len(seen))
+			}
+			for i := range tc.defaultCount {
+				want := metric{"default-ns", "[[d]]", float64(i)}
+				if got := seen[fmt.Sprintf("default%d", i)]; got != want {
+					t.Errorf("default%d: got %+v, want %+v", i, got, want)
+				}
+			}
+			for i := range tc.contextCount {
+				want := metric{"context-ns", "[[c]]", float64(i)}
+				if got := seen[fmt.Sprintf("context%d", i)]; got != want {
+					t.Errorf("context%d: got %+v, want %+v", i, got, want)
+				}
+			}
+		})
+	}
+}
 
 func assertCompliant(t *testing.T, out []byte) {
 	t.Helper()
