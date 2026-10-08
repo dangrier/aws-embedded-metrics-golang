@@ -1,6 +1,8 @@
 // Package emf implements the spec available here: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
 package emf
 
+import "encoding/json"
+
 // Metadata struct as defined in AWS Embedded Metrics Format spec.
 type Metadata struct {
 	Timestamp    int64             `json:"Timestamp"`
@@ -13,6 +15,27 @@ type MetricDirective struct {
 	Namespace  string             `json:"Namespace"`
 	Dimensions []DimensionSet     `json:"Dimensions"`
 	Metrics    []MetricDefinition `json:"Metrics"`
+}
+
+// MarshalJSON keeps the output spec compliant when there are no dimensions.
+// The spec requires at least one DimensionSet, and allows a DimensionSet to
+// be empty, so missing dimensions are written as [[]] instead of null.
+func (d MetricDirective) MarshalJSON() ([]byte, error) {
+	type directive MetricDirective
+
+	sets := make([]DimensionSet, 0, len(d.Dimensions))
+	for _, set := range d.Dimensions {
+		if set == nil {
+			set = DimensionSet{}
+		}
+		sets = append(sets, set)
+	}
+	if len(sets) == 0 {
+		sets = append(sets, DimensionSet{})
+	}
+	d.Dimensions = sets
+
+	return json.Marshal(directive(d))
 }
 
 // DimensionSet as defined in AWS Embedded Metrics Format spec.

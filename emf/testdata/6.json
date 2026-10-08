@@ -14,7 +14,7 @@
           }
         ],
         "Namespace": "galaxy",
-        "Dimensions": null
+        "Dimensions": [[]]
       }
     ]
   },

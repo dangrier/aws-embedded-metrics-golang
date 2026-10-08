@@ -11,7 +11,7 @@
           }
         ],
         "Namespace": "aws-embedded-metrics",
-        "Dimensions": null
+        "Dimensions": [[]]
       }
     ]
   },

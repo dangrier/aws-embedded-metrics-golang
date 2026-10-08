@@ -52,9 +52,15 @@ emf.New(
     emf.WithWriter(os.Stderr), // Log to stderr.
     emf.WithTimestamp(time.Now().Add(-time.Hour)), // Record past metrics.
     emf.WithoutDimensions(), // Do not include useful Lambda related dimensions.
-    emf.WithLogGroup("my-logs") // Add specific log group.
+    emf.WithLogGroup("my-logs"), // Add specific log group.
+    emf.WithErrorHandler(func(err error) { log.Println(err) }), // Hear about skipped input.
 )
 ```
+
+Output always follows the [EMF specification](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html).
+Input that would break it is skipped, and the rest is still logged. This includes NaN or infinite
+values, invalid names, unknown units, and a name used for both a metric and a dimension.
+Use `WithErrorHandler` to find out what was skipped. Those errors wrap `emf.ErrInvalid`.
 
 Functions for reporting metrics:
 

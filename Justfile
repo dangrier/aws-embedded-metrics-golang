@@ -15,6 +15,10 @@ test:
 test-race:
     go test -race -cover ./...
 
+# Fuzz the EMF output against the AWS spec
+fuzz time="1m":
+    go test ./emf -run '^$' -fuzz FuzzSpecCompliance -fuzztime {{time}} -fuzzminimizetime 100x
+
 # Run go vet
 vet:
     go vet ./...

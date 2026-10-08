@@ -18,12 +18,15 @@ type Logger struct {
 	values            map[string]any
 	withoutDimensions bool
 	logGroupName      string
+	onError           func(error)
+	registry          *registry
 }
 
 // Context gives ability to add another MetricDirective section for Logger.
 type Context struct {
 	metricDirective MetricDirective
 	values          map[string]any
+	registry        *registry
 }
 
 // LoggerOption defines a function that can be used to customize a logger.
@@ -54,6 +57,15 @@ func WithoutDimensions() LoggerOption {
 func WithLogGroup(logGroup string) LoggerOption {
 	return func(l *Logger) {
 		l.logGroupName = logGroup
+	}
+}
+
+// WithErrorHandler sets a function that is called when the logger skips
+// input that would break the EMF spec, or fails to write. Skipped input
+// errors wrap ErrInvalid. Without a handler, these errors are ignored.
+func WithErrorHandler(fn func(error)) LoggerOption {
+	return func(l *Logger) {
+		l.onError = fn
 	}
 }
 
@@ -93,7 +105,8 @@ func New(opts ...LoggerOption) *Logger {
 	}
 
 	l.values = values
-	l.defaultContext = newContext(values, l.withoutDimensions)
+	l.registry = newRegistry(l.onError)
+	l.defaultContext = newContext(values, l.withoutDimensions, l.registry)
 
 	return &l
 }
@@ -117,29 +130,24 @@ func (l *Logger) Namespace(namespace string) *Logger {
 	return l
 }
 
-// Property sets property.
+// Property sets property. A property can't use the name of a metric or
+// dimension.
 func (l *Logger) Property(key, value string) *Logger {
-	l.values[key] = value
+	if l.registry.checkProperty(key) {
+		l.values[key] = value
+	}
 	return l
 }
 
 // Dimension adds single dimension on default context.
 func (l *Logger) Dimension(key, value string) *Logger {
-	l.defaultContext.metricDirective.Dimensions = append(
-		l.defaultContext.metricDirective.Dimensions, DimensionSet{key})
-	l.values[key] = value
+	l.defaultContext.Dimension(key, value)
 	return l
 }
 
 // DimensionSet adds multiple dimensions on default context.
 func (l *Logger) DimensionSet(dimensions ...Dimension) *Logger {
-	var set DimensionSet
-	for _, d := range dimensions {
-		set = append(set, d.Key)
-		l.values[d.Key] = d.Value
-	}
-	l.defaultContext.metricDirective.Dimensions = append(
-		l.defaultContext.metricDirective.Dimensions, set)
+	l.defaultContext.DimensionSet(dimensions...)
 	return l
 }
 
@@ -209,41 +217,52 @@ func (l *Logger) Log() {
 		return
 	}
 
-	l.values["_aws"] = Metadata{
+	l.values[metadataKey] = Metadata{
 		Timestamp:    l.timestamp,
 		Metrics:      metrics,
 		LogGroupName: l.logGroupName,
 	}
-	buf, _ := json.Marshal(l.values)
-	_, _ = fmt.Fprintln(l.out, string(buf))
+	buf, err := json.Marshal(l.values)
+	if err != nil {
+		l.registry.report(fmt.Errorf("emf: encoding metrics: %w", err))
+		return
+	}
+	if _, err := fmt.Fprintln(l.out, string(buf)); err != nil {
+		l.registry.report(fmt.Errorf("emf: writing metrics: %w", err))
+	}
 }
 
 // NewContext creates new context for given logger.
 func (l *Logger) NewContext() *Context {
-	c := newContext(l.values, l.withoutDimensions)
+	c := newContext(l.values, l.withoutDimensions, l.registry)
 	l.contexts = append(l.contexts, &c)
 	return &c
 }
 
 // Namespace sets namespace on given context.
 func (c *Context) Namespace(namespace string) *Context {
-	c.metricDirective.Namespace = namespace
+	if c.registry.checkNamespace(namespace) {
+		c.metricDirective.Namespace = namespace
+	}
 	return c
 }
 
 // Dimension adds single dimension on given context.
 func (c *Context) Dimension(key, value string) *Context {
-	c.metricDirective.Dimensions = append(c.metricDirective.Dimensions, DimensionSet{key})
-	c.values[key] = value
-	return c
+	return c.DimensionSet(NewDimension(key, value))
 }
 
-// DimensionSet adds multiple dimensions on given context.
+// DimensionSet adds multiple dimensions on given context. If any dimension
+// is invalid, the whole set is skipped.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
-	var set DimensionSet
+	if !c.registry.checkDimensionSet(dimensions) {
+		return c
+	}
+	set := make(DimensionSet, 0, len(dimensions))
 	for _, d := range dimensions {
 		set = append(set, d.Key)
 		c.values[d.Key] = d.Value
+		c.registry.dimensions[d.Key] = true
 	}
 	c.metricDirective.Dimensions = append(c.metricDirective.Dimensions, set)
 	return c
@@ -269,7 +288,7 @@ func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Co
 	return c.put(name, value, unit)
 }
 
-func newContext(values map[string]any, withoutDimensions bool) Context {
+func newContext(values map[string]any, withoutDimensions bool, reg *registry) Context {
 	var defaultDimensions []DimensionSet
 	if !withoutDimensions {
 		// set default dimensions for lambda function
@@ -278,6 +297,8 @@ func newContext(values map[string]any, withoutDimensions bool) Context {
 			defaultDimensions = []DimensionSet{{"ServiceName", "ServiceType"}}
 			values["ServiceType"] = "AWS::Lambda::Function"
 			values["ServiceName"] = fnName
+			reg.dimensions["ServiceType"] = true
+			reg.dimensions["ServiceName"] = true
 		}
 	}
 
@@ -286,11 +307,16 @@ func newContext(values map[string]any, withoutDimensions bool) Context {
 			Namespace:  "aws-embedded-metrics",
 			Dimensions: defaultDimensions,
 		},
-		values: values,
+		values:   values,
+		registry: reg,
 	}
 }
 
 func (c *Context) put(name string, value any, unit MetricUnit) *Context {
+	if !c.registry.checkMetric(name, value, unit) {
+		return c
+	}
+	c.registry.metrics[name] = true
 	c.metricDirective.Metrics = append(c.metricDirective.Metrics, MetricDefinition{
 		Name: name,
 		Unit: unit,

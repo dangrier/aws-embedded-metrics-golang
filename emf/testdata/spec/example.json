@@ -1,0 +1,25 @@
+{
+  "_aws": {
+    "Timestamp": 1574109732004,
+    "CloudWatchMetrics": [
+      {
+        "Namespace": "lambda-function-metrics",
+        "Dimensions": [
+          [
+            "functionVersion"
+          ]
+        ],
+        "Metrics": [
+          {
+            "Name": "time",
+            "Unit": "Milliseconds",
+            "StorageResolution": 60
+          }
+        ]
+      }
+    ]
+  },
+  "functionVersion": "$LATEST",
+  "time": 100,
+  "requestId": "989ffbf8-9ace-4817-a57c-e4dd734019ee"
+}
