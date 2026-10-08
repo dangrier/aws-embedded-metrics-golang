@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strings"
@@ -236,6 +237,79 @@ func TestErrorHandler(t *testing.T) {
 			Metric("good", 1).
 			Log()
 		assertCompliant(t, buf.Bytes())
+	})
+}
+
+// TestTimestampWindow checks timestamps CloudWatch won't publish are
+// reported, and that the line is still written.
+func TestTimestampWindow(t *testing.T) {
+	day := 24 * time.Hour
+	tcs := []struct {
+		name     string
+		offset   time.Duration
+		reported bool
+	}{
+		{"now", 0, false},
+		{"13 days ago", -13 * day, false},
+		{"1 hour ahead", time.Hour, false},
+		{"15 days ago", -15 * day, true},
+		{"3 hours ahead", 3 * time.Hour, true},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var errs []error
+			emf.New(
+				emf.WithWriter(&buf),
+				emf.WithoutDimensions(),
+				emf.WithTimestamp(time.Now().Add(tc.offset)),
+				emf.WithErrorHandler(func(err error) { errs = append(errs, err) }),
+			).Metric("m", 1).Log()
+
+			if buf.Len() == 0 {
+				t.Error("expected the line to be written")
+			}
+			if !tc.reported {
+				if len(errs) != 0 {
+					t.Errorf("expected no errors, got %v", errs)
+				}
+				assertCompliant(t, buf.Bytes())
+				return
+			}
+			if len(errs) != 1 || !errors.Is(errs[0], emf.ErrInvalid) {
+				t.Errorf("expected 1 ErrInvalid error, got %v", errs)
+			}
+		})
+	}
+
+	t.Run("reported once when split", func(t *testing.T) {
+		var errs []error
+		logger := emf.New(
+			emf.WithWriter(io.Discard),
+			emf.WithTimestamp(time.Now().Add(-15*day)),
+			emf.WithErrorHandler(func(err error) { errs = append(errs, err) }),
+		)
+		for i := range 250 {
+			logger.Metric(fmt.Sprintf("m%d", i), i)
+		}
+		logger.Log()
+
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(errs))
+		}
+	})
+
+	t.Run("no metrics, no error", func(t *testing.T) {
+		var errs []error
+		emf.New(
+			emf.WithTimestamp(time.Now().Add(-15*day)),
+			emf.WithErrorHandler(func(err error) { errs = append(errs, err) }),
+		).Log()
+
+		if len(errs) != 0 {
+			t.Errorf("expected no errors, got %v", errs)
+		}
 	})
 }
 

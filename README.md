@@ -62,6 +62,11 @@ Input that would break it is skipped, and the rest is still logged. This include
 values, invalid names, unknown units, and a name used for both a metric and a dimension.
 Use `WithErrorHandler` to find out what was skipped. Those errors wrap `emf.ErrInvalid`.
 
+CloudWatch only publishes metrics with a timestamp from 14 days in the past to 2 hours in the
+future. If a `WithTimestamp` value is outside that window when `Log()` is called, the error
+handler is told (wrapping `emf.ErrInvalid`), but the line is still written. CloudWatch keeps it
+as a log event, it just won't turn it into metrics.
+
 A single call to `Log()` may write more than one line. The spec allows at most 100 metrics
 per log event, and CloudWatch drops every metric in an event that has more. So if you log
 more than 100 metrics at once (across all contexts), they are split across several lines of
