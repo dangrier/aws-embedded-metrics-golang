@@ -89,7 +89,6 @@ func New(opts ...LoggerOption) *Logger {
 		timestamp: time.Now().UnixMilli(),
 	}
 
-	// apply any options
 	for _, opt := range opts {
 		opt(&l)
 	}

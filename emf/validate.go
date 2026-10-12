@@ -135,7 +135,6 @@ func (r *registry) isMetric(name string) bool {
 	return ok
 }
 
-// valueCount returns how many values a metric has.
 func (r *registry) valueCount(name string) int {
 	return 1 + len(r.more[name])
 }
@@ -218,11 +217,9 @@ func validString(s string, maxLen int) bool {
 }
 
 func validValue(value any) bool {
-	f, ok := value.(float64)
-	if !ok {
-		return true // ints are always within range
-	}
-	return !math.IsNaN(f) && math.Abs(f) <= maxMetricMagnitude
+	// Only floats need checking, because an int can't be NaN or reach 2^360.
+	f, isFloat := value.(float64)
+	return !isFloat || (!math.IsNaN(f) && math.Abs(f) <= maxMetricMagnitude)
 }
 
 func validUnit(unit MetricUnit) bool {
