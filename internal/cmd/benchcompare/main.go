@@ -128,7 +128,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return errRegression
 }
 
-// printer writes formatted output and keeps the first error.
 type printer struct {
 	w   io.Writer
 	err error
