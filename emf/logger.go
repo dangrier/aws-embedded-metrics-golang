@@ -7,6 +7,7 @@ import (
 	"iter"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -150,12 +151,17 @@ func (l *Logger) Property(key, value string) *Logger {
 	return l
 }
 
-// Dimension adds single dimension on default context.
+// Dimension adds single dimension on default context. See DimensionSet for
+// what happens when the key is already set.
 func (l *Logger) Dimension(key, value string) *Logger {
 	return l.DimensionSet(NewDimension(key, value))
 }
 
-// DimensionSet adds multiple dimensions on default context.
+// DimensionSet adds multiple dimensions on default context. If any dimension
+// is invalid, the whole set is skipped. A key given more than once is added
+// once, and the last value wins. If the context already has a set with the
+// same keys, in any order, the set isn't added again, but the values are
+// updated.
 func (l *Logger) DimensionSet(dimensions ...Dimension) *Logger {
 	l.registry.do(func() { l.defaultContext.dimensionSet(dimensions) })
 	return l
@@ -384,13 +390,17 @@ func (c *Context) Namespace(namespace string) *Context {
 	return c
 }
 
-// Dimension adds single dimension on given context.
+// Dimension adds single dimension on given context. See DimensionSet for
+// what happens when the key is already set.
 func (c *Context) Dimension(key, value string) *Context {
 	return c.DimensionSet(NewDimension(key, value))
 }
 
 // DimensionSet adds multiple dimensions on given context. If any dimension
-// is invalid, the whole set is skipped.
+// is invalid, the whole set is skipped. A key given more than once is added
+// once, and the last value wins. If the context already has a set with the
+// same keys, in any order, the set isn't added again, but the values are
+// updated.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
 	c.registry.do(func() { c.dimensionSet(dimensions) })
 	return c
@@ -427,16 +437,52 @@ func (c *Context) namespace(namespace string) {
 }
 
 func (c *Context) dimensionSet(dimensions []Dimension) {
-	if !c.registry.checkDimensionSet(dimensions) {
+	set := dimensionKeys(dimensions)
+	if !c.registry.checkDimensionSet(dimensions, set) {
 		return
 	}
-	set := make(DimensionSet, 0, len(dimensions))
 	for _, d := range dimensions {
-		set = append(set, d.Key)
 		c.values[d.Key] = d.Value
 		c.registry.dimensions[d.Key] = true
 	}
+	// A repeated set would publish each metric again for the same dimensions.
+	for _, existing := range c.metricDirective.Dimensions {
+		if sameKeys(existing, set) {
+			return
+		}
+	}
 	c.metricDirective.Dimensions = append(c.metricDirective.Dimensions, set)
+}
+
+// dimensionKeys returns the keys of dimensions in order, each once. It stops
+// once there are more keys than a dimension set may have, since the set
+// will be skipped anyway.
+func dimensionKeys(dimensions []Dimension) DimensionSet {
+	set := make(DimensionSet, 0, min(len(dimensions), maxDimensionSetSize+1))
+	for _, d := range dimensions {
+		if slices.Contains(set, d.Key) {
+			continue
+		}
+		set = append(set, d.Key)
+		if len(set) > maxDimensionSetSize {
+			break
+		}
+	}
+	return set
+}
+
+// sameKeys reports whether a and b have the same keys in any order. Both
+// must have each key once.
+func sameKeys(a, b DimensionSet) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, key := range a {
+		if !slices.Contains(b, key) {
+			return false
+		}
+	}
+	return true
 }
 
 func newContext(values map[string]any, withoutDimensions bool, reg *registry) Context {

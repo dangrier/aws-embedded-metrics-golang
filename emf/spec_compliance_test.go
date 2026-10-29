@@ -99,6 +99,28 @@ func TestSpecCompliance(t *testing.T) {
 		assertCompliant(t, buf.Bytes())
 	})
 
+	t.Run("30 keys with repeats", func(t *testing.T) {
+		var buf bytes.Buffer
+		var errs []error
+		var dims []emf.Dimension
+		for i := range 30 {
+			dims = append(dims, emf.NewDimension(fmt.Sprintf("d%d", i), "v"), emf.NewDimension(fmt.Sprintf("d%d", i), "w"))
+		}
+		emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+			errs = append(errs, err)
+		})).
+			DimensionSet(dims...).
+			Metric("m", 1).
+			Log()
+		if len(errs) > 0 {
+			t.Errorf("expected no errors, got %v", errs)
+		}
+		assertCompliant(t, buf.Bytes())
+		if !bytes.Contains(buf.Bytes(), []byte(`"d29":"w"`)) {
+			t.Errorf("dimension set missing from output: %s", buf.Bytes())
+		}
+	})
+
 	for _, unit := range allUnits {
 		t.Run("unit "+string(unit), func(t *testing.T) {
 			var buf bytes.Buffer
@@ -135,6 +157,7 @@ func FuzzSpecCompliance(f *testing.F) {
 		logger.
 			Namespace(namespace).
 			Dimension(dimKey, dimValue).
+			DimensionSet(emf.NewDimension(dimKey, dimValue), emf.NewDimension(dimKey, dimValue)).
 			MetricAs(intName, intValue, emf.MetricUnit(unit)).
 			MetricFloatAs(floatName, floatValue, emf.MetricUnit(unit)).
 			Property(propKey, "value")
