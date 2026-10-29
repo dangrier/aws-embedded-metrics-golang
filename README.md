@@ -103,12 +103,19 @@ on it at 1 second intervals. High-resolution metrics cost more.
 // Each call adds its own dimension set, so each metric is published once per set.
 logger.Dimension("Service", "checkout").Dimension("Region", "ap-southeast-2")
 
+// A set with the same keys as one already added, in any order, isn't added again, but its
+// values are updated. This leaves one ["Service"] set, with Service now "cart".
+logger.Dimension("Service", "cart")
+
 // One set with both dimensions, so each metric is published once for the combination.
 logger.DimensionSet(
 	emf.NewDimension("Service", "checkout"),
 	emf.NewDimension("Region", "ap-southeast-2"),
 )
 ```
+
+A key repeated within one set is written once, with the last value. Repeats are only removed within
+a context, since each context is a separate directive with its own namespace.
 
 ### Properties
 
