@@ -1,0 +1,20 @@
+{
+  "Declined": 1,
+  "Provider": "card",
+  "Region": "au",
+  "_aws": {
+    "Timestamp": "<<PRESENCE>>",
+    "CloudWatchMetrics": [
+      {
+        "Namespace": "aws-embedded-metrics",
+        "Dimensions": [["Provider"]],
+        "Metrics": [
+          {
+            "Name": "Declined",
+            "Unit": "None"
+          }
+        ]
+      }
+    ]
+  }
+}

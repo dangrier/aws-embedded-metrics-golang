@@ -20,7 +20,7 @@ type Logger struct {
 	timestamp         int64
 	defaultContext    Context
 	contexts          []*Context
-	values            map[string]any
+	properties        map[string]any
 	withoutDimensions bool
 	logGroupName      string
 	onError           func(error)
@@ -31,8 +31,15 @@ type Logger struct {
 // Context gives ability to add another MetricDirective section for Logger.
 type Context struct {
 	metricDirective MetricDirective
-	values          map[string]any
+	dimensions      []dimensionValue
 	registry        *registry
+}
+
+// dimensionValue is a context's value for a dimension key. The value is
+// stored as an any so it isn't converted again for each log event.
+type dimensionValue struct {
+	key   string
+	value any
 }
 
 // LoggerOption defines a function that can be used to customize a logger.
@@ -94,29 +101,26 @@ func New(opts ...LoggerOption) *Logger {
 		opt(&l)
 	}
 
-	values := make(map[string]any)
-
 	if !l.withoutDimensions {
 		// set default properties for lambda function
 		fnName := os.Getenv("AWS_LAMBDA_FUNCTION_NAME")
 		if fnName != "" {
-			values["executionEnvironment"] = os.Getenv("AWS_EXECUTION_ENV")
-			values["memorySize"] = os.Getenv("AWS_LAMBDA_FUNCTION_MEMORY_SIZE")
-			values["functionVersion"] = os.Getenv("AWS_LAMBDA_FUNCTION_VERSION")
-			values["logStreamId"] = os.Getenv("AWS_LAMBDA_LOG_STREAM_NAME")
+			l.setProperty("executionEnvironment", os.Getenv("AWS_EXECUTION_ENV"))
+			l.setProperty("memorySize", os.Getenv("AWS_LAMBDA_FUNCTION_MEMORY_SIZE"))
+			l.setProperty("functionVersion", os.Getenv("AWS_LAMBDA_FUNCTION_VERSION"))
+			l.setProperty("logStreamId", os.Getenv("AWS_LAMBDA_LOG_STREAM_NAME"))
 		}
 	}
 
 	// only collect traces which have been sampled
 	amznTraceID := os.Getenv("_X_AMZN_TRACE_ID")
 	if strings.Contains(amznTraceID, "Sampled=1") {
-		values["traceId"] = amznTraceID
+		l.setProperty("traceId", amznTraceID)
 	}
 
-	l.values = values
 	l.registry = newRegistry(l.onError)
 	l.registry.logger = &l
-	l.defaultContext = newContext(values, l.withoutDimensions, l.registry)
+	l.defaultContext = newContext(l.withoutDimensions, l.registry)
 
 	return &l
 }
@@ -145,10 +149,19 @@ func (l *Logger) Namespace(namespace string) *Logger {
 func (l *Logger) Property(key, value string) *Logger {
 	l.registry.do(func() {
 		if l.registry.checkProperty(key) {
-			l.values[key] = value
+			l.setProperty(key, value)
 		}
 	})
 	return l
+}
+
+// setProperty sets a property whose key is already checked. It must be
+// called while holding the registry lock, or from New.
+func (l *Logger) setProperty(key, value string) {
+	if l.properties == nil {
+		l.properties = make(map[string]any)
+	}
+	l.properties[key] = value
 }
 
 // Dimension adds single dimension on default context. See DimensionSet for
@@ -220,8 +233,11 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 }
 
 // Log prints all Contexts and metric values to chosen output in Embedded Metric Format.
-// The spec allows at most 100 metrics per log event, and 100 values per
-// metric, so more than that are split across several lines. A timestamp outside the window CloudWatch
+// Contexts share a line unless they disagree on a dimension value (the same
+// key with different values), in which case they are written on separate
+// lines so each context's metrics keep their own value. The spec allows at
+// most 100 metrics per log event, and 100 values per metric, so more than
+// that are split across several lines. A timestamp outside the window CloudWatch
 // accepts (14 days in the past to 2 hours in the future), or a line over
 // CloudWatch's 1 MB limit, is reported to the error handler, but the lines
 // are still written.
@@ -268,17 +284,8 @@ func (l *Logger) Log() {
 // only ever appended to, so the snapshot stays valid after the lock is
 // released.
 func (l *Logger) snapshot() []map[string]any {
-	var metrics []MetricDirective
-	if len(l.defaultContext.metricDirective.Metrics) > 0 {
-		metrics = append(metrics, l.defaultContext.metricDirective)
-	}
-	for _, v := range l.contexts {
-		if len(v.metricDirective.Metrics) > 0 {
-			metrics = append(metrics, v.metricDirective)
-		}
-	}
-
-	if len(metrics) == 0 {
+	directives, disagree := l.directives()
+	if len(directives) == 0 {
 		return nil
 	}
 
@@ -291,17 +298,108 @@ func (l *Logger) snapshot() []map[string]any {
 		rounds = max(rounds, (l.registry.valueCount(name)+maxValuesPerMetric-1)/maxValuesPerMetric)
 	}
 
+	// Usually the contexts agree on every dimension value, so they share
+	// lines. Contexts that disagree are written on separate lines.
+	if !disagree {
+		return l.groupEvents(nil, contextGroup{directives: directives}, rounds)
+	}
 	var events []map[string]any
+	for _, g := range l.groupContexts() {
+		events = l.groupEvents(events, g, rounds)
+	}
+	return events
+}
+
+// groupEvents appends the root objects of a group's log events to events.
+func (l *Logger) groupEvents(events []map[string]any, g contextGroup, rounds int) []map[string]any {
 	for round := range rounds {
-		directives := metrics
+		directives := g.directives
 		if round > 0 {
-			directives = l.directivesInRound(metrics, round)
+			directives = l.directivesInRound(g.directives, round)
 		}
 		for event := range splitDirectives(directives, maxMetricsPerEvent) {
-			events = append(events, l.eventValues(event, round))
+			events = append(events, l.eventValues(event, g, round))
 		}
 	}
 	return events
+}
+
+// directives returns the directive of each context with metrics, and
+// whether any two of those contexts disagree on a dimension value.
+func (l *Logger) directives() (directives []MetricDirective, disagree bool) {
+	for c := range l.allContexts() {
+		if len(c.metricDirective.Metrics) == 0 {
+			continue
+		}
+		directives = append(directives, c.metricDirective)
+		// Only check once more than one context has metrics.
+		if len(directives) > 1 && !disagree {
+			disagree = c.disagreesBefore(l)
+		}
+	}
+	return directives, disagree
+}
+
+// contextGroup is a set of contexts with metrics whose dimension values
+// agree, so their directives can share log lines.
+type contextGroup struct {
+	contexts   []*Context // nil means every context with metrics
+	directives []MetricDirective
+}
+
+// has reports whether c is in the group.
+func (g contextGroup) has(c *Context) bool {
+	if g.contexts == nil {
+		return len(c.metricDirective.Metrics) > 0
+	}
+	return slices.Contains(g.contexts, c)
+}
+
+// agrees reports whether c's dimension values agree with every context in
+// the group.
+func (g contextGroup) agrees(c *Context) bool {
+	for _, other := range g.contexts {
+		if c.disagrees(other) {
+			return false
+		}
+	}
+	return true
+}
+
+// groupContexts returns the contexts with metrics in groups whose contexts
+// don't disagree on any dimension value. Each context joins the first group
+// it agrees with, so groups and the contexts in them keep the order of
+// allContexts.
+func (l *Logger) groupContexts() []contextGroup {
+	var groups []contextGroup
+	for c := range l.allContexts() {
+		if len(c.metricDirective.Metrics) == 0 {
+			continue
+		}
+		i := slices.IndexFunc(groups, func(g contextGroup) bool { return g.agrees(c) })
+		if i < 0 {
+			i = len(groups)
+			groups = append(groups, contextGroup{})
+		}
+		groups[i].contexts = append(groups[i].contexts, c)
+		groups[i].directives = append(groups[i].directives, c.metricDirective)
+	}
+	return groups
+}
+
+// allContexts yields the default context, then the contexts in the order
+// they were created.
+func (l *Logger) allContexts() iter.Seq[*Context] {
+	return func(yield func(*Context) bool) {
+		if !yield(&l.defaultContext) {
+			return
+		}
+		for _, c := range l.contexts {
+			if !yield(c) {
+				return
+			}
+		}
+	}
 }
 
 // directivesInRound returns the directives with only the metrics that still
@@ -351,16 +449,31 @@ func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricD
 	}
 }
 
-// eventValues returns the root object of one log event. It holds every
-// property and dimension, and the values for the round of the metrics its
-// directives refer to.
-func (l *Logger) eventValues(directives []MetricDirective, round int) map[string]any {
-	size := len(l.values) + 1
+// eventValues returns the root object of one log event for a group. It holds
+// every property and dimension, and the values for the round of the metrics
+// its directives refer to. A dimension value replaces a property with the
+// same key, and the group's own dimension values replace those of other
+// contexts.
+func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, round int) map[string]any {
+	size := len(l.properties) + 1
+	for c := range l.allContexts() {
+		size += len(c.dimensions)
+	}
 	for _, d := range directives {
 		size += len(d.Metrics)
 	}
 	values := make(map[string]any, size)
-	maps.Copy(values, l.values)
+	maps.Copy(values, l.properties)
+	for c := range l.allContexts() {
+		if !g.has(c) {
+			c.copyDimensions(values)
+		}
+	}
+	for c := range l.allContexts() {
+		if g.has(c) {
+			c.copyDimensions(values)
+		}
+	}
 	for _, d := range directives {
 		for _, m := range d.Metrics {
 			values[m.Name] = l.registry.valuesInRound(m.Name, round, maxValuesPerMetric)
@@ -374,11 +487,15 @@ func (l *Logger) eventValues(directives []MetricDirective, round int) map[string
 	return values
 }
 
-// NewContext creates new context for given logger.
+// NewContext creates new context for given logger. A context has its own
+// namespace, dimension sets and dimension values, and shares the logger's
+// properties. Contexts are written on the same line, unless they set the
+// same dimension key to different values. Then they are written on separate
+// lines, so each context's metrics keep their own value.
 func (l *Logger) NewContext() *Context {
 	var c Context
 	l.registry.do(func() {
-		c = newContext(l.values, l.withoutDimensions, l.registry)
+		c = newContext(l.withoutDimensions, l.registry)
 		l.contexts = append(l.contexts, &c)
 	})
 	return &c
@@ -442,8 +559,7 @@ func (c *Context) dimensionSet(dimensions []Dimension) {
 		return
 	}
 	for _, d := range dimensions {
-		c.values[d.Key] = d.Value
-		c.registry.dimensions[d.Key] = true
+		c.setDimension(d.Key, d.Value)
 	}
 	// A repeated set would publish each metric again for the same dimensions.
 	for _, existing := range c.metricDirective.Dimensions {
@@ -452,6 +568,62 @@ func (c *Context) dimensionSet(dimensions []Dimension) {
 		}
 	}
 	c.metricDirective.Dimensions = append(c.metricDirective.Dimensions, set)
+}
+
+// setDimension sets the value of a dimension whose key is already checked.
+// Setting a key again keeps the last value.
+func (c *Context) setDimension(key, value string) {
+	if i := c.dimensionIndex(key); i >= 0 {
+		c.dimensions[i].value = value
+		return
+	}
+	if c.dimensions == nil {
+		// Most contexts have only a few dimensions.
+		c.dimensions = make([]dimensionValue, 0, 4)
+	}
+	c.dimensions = append(c.dimensions, dimensionValue{key, value})
+}
+
+// dimensionIndex returns the index of key in c.dimensions, or -1.
+func (c *Context) dimensionIndex(key string) int {
+	for i, d := range c.dimensions {
+		if d.key == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// copyDimensions copies c's dimension values into values.
+func (c *Context) copyDimensions(values map[string]any) {
+	for _, d := range c.dimensions {
+		values[d.key] = d.value
+	}
+}
+
+// disagrees reports whether c and other set the same dimension key to
+// different values.
+func (c *Context) disagrees(other *Context) bool {
+	for _, d := range c.dimensions {
+		if i := other.dimensionIndex(d.key); i >= 0 && other.dimensions[i].value != d.value {
+			return true
+		}
+	}
+	return false
+}
+
+// disagreesBefore reports whether c disagrees with a context with metrics
+// that comes before it in l.allContexts.
+func (c *Context) disagreesBefore(l *Logger) bool {
+	for other := range l.allContexts() {
+		if other == c {
+			return false
+		}
+		if len(other.metricDirective.Metrics) > 0 && c.disagrees(other) {
+			return true
+		}
+	}
+	return false
 }
 
 // dimensionKeys returns the keys of dimensions in order, each once. It stops
@@ -485,26 +657,19 @@ func sameKeys(a, b DimensionSet) bool {
 	return true
 }
 
-func newContext(values map[string]any, withoutDimensions bool, reg *registry) Context {
-	var defaultDimensions []DimensionSet
+func newContext(withoutDimensions bool, reg *registry) Context {
+	c := Context{
+		metricDirective: MetricDirective{Namespace: "aws-embedded-metrics"},
+		registry:        reg,
+	}
 	if !withoutDimensions {
 		// set default dimensions for lambda function
 		fnName := os.Getenv("AWS_LAMBDA_FUNCTION_NAME")
 		if fnName != "" {
-			defaultDimensions = []DimensionSet{{"ServiceName", "ServiceType"}}
-			values["ServiceType"] = "AWS::Lambda::Function"
-			values["ServiceName"] = fnName
-			reg.dimensions["ServiceType"] = true
-			reg.dimensions["ServiceName"] = true
+			c.metricDirective.Dimensions = []DimensionSet{{"ServiceName", "ServiceType"}}
+			c.setDimension("ServiceType", "AWS::Lambda::Function")
+			c.setDimension("ServiceName", fnName)
 		}
 	}
-
-	return Context{
-		metricDirective: MetricDirective{
-			Namespace:  "aws-embedded-metrics",
-			Dimensions: defaultDimensions,
-		},
-		values:   values,
-		registry: reg,
-	}
+	return c
 }

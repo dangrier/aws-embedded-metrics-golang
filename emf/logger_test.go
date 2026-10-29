@@ -263,6 +263,106 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/22.json",
 	},
+	{
+		name: "contexts disagree on a dimension value",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.NewContext().Namespace("a").Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Namespace("b").Dimension("Provider", "paypal").Metric("Refunds", 2)
+		},
+		expected: "testdata/23.json",
+	},
+	{
+		name: "contexts agree on dimension values",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.NewContext().Namespace("a").Dimension("Provider", "card").Dimension("Region", "au").Metric("Declined", 1)
+			logger.NewContext().Namespace("b").Dimension("Provider", "card").Dimension("Stage", "prod").Metric("Refunds", 2)
+		},
+		expected: "testdata/24.json",
+	},
+	{
+		name: "default context disagrees with a new context",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			ctx := logger.NewContext().Namespace("b").Dimension("Provider", "paypal").Metric("Refunds", 2)
+			logger.Namespace("a").Dimension("Provider", "card").Metric("Declined", 1)
+			ctx.Metric("Chargebacks", 3)
+		},
+		expected: "testdata/25.json",
+	},
+	{
+		name: "three contexts, two agree",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.NewContext().Namespace("a").Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Namespace("b").Dimension("Provider", "paypal").Metric("Refunds", 2)
+			logger.NewContext().Namespace("c").Dimension("Provider", "card").Metric("Approved", 3)
+		},
+		expected: "testdata/26.json",
+	},
+	{
+		name: "metric name shared by contexts that disagree",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Namespace("a").Dimension("Provider", "card").Put("Latency", 10).Metric("Declined", 1)
+			logger.NewContext().Namespace("b").Dimension("Provider", "paypal").Put("Latency", 20)
+		},
+		expected: "testdata/27.json",
+	},
+	{
+		name: "dimension replaces a property on every line",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Property("Provider", "property").
+				DimensionSet(emf.NewDimension("Provider", "card"), emf.NewDimension("Region", "au")).
+				Metric("Declined", 1)
+			logger.NewContext().
+				DimensionSet(emf.NewDimension("Provider", "paypal"), emf.NewDimension("Region", "au")).
+				Metric("Refunds", 2)
+			// Disagrees with both on Region, and has no Provider of its own.
+			logger.NewContext().Dimension("Region", "nz").Metric("Approved", 3)
+		},
+		expected: "testdata/28.json",
+	},
+	{
+		name: "context without metrics doesn't change another's value",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Dimension("Provider", "paypal").Dimension("Region", "au")
+		},
+		expected: "testdata/29.json",
+	},
+	{
+		name: "lambda contexts disagree on another dimension",
+		env: map[string]string{
+			"AWS_LAMBDA_FUNCTION_NAME":        "some-func-name",
+			"AWS_EXECUTION_ENV":               "golang",
+			"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
+			"AWS_LAMBDA_FUNCTION_VERSION":     "1",
+			"AWS_LAMBDA_LOG_STREAM_NAME":      "log/stream",
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Dimension("Provider", "paypal").Metric("Refunds", 2)
+		},
+		expected: "testdata/30.json",
+	},
 }
 
 // run sets up the environment, logs and returns the output.
@@ -295,6 +395,10 @@ func TestEmf(t *testing.T) {
 				t.Fatal("unable to read file with expected json")
 			}
 
+			// An expected array holds one object per line, in order.
+			if bytes.HasPrefix(bytes.TrimSpace(f), []byte("[")) {
+				out = linesAsArray(out)
+			}
 			jsonassert.New(t).Assertf(string(out), "%s", string(f))
 		})
 	}
@@ -319,6 +423,15 @@ func TestEmf(t *testing.T) {
 			t.Error("Buffer not empty")
 		}
 	})
+}
+
+// linesAsArray turns the lines of out into a JSON array.
+func linesAsArray(out []byte) []byte {
+	var lines [][]byte
+	for line := range bytes.Lines(out) {
+		lines = append(lines, bytes.TrimSuffix(line, []byte("\n")))
+	}
+	return append(append([]byte("["), bytes.Join(lines, []byte(","))...), ']')
 }
 
 func setenv(t *testing.T, env map[string]string) {

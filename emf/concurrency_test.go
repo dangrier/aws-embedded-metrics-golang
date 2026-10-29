@@ -2,6 +2,7 @@ package emf_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sync"
@@ -92,5 +93,61 @@ func TestErrorHandlerCanUseLogger(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte(`"errors":1`)) {
 		t.Errorf("metric from error handler missing: %s", buf.Bytes())
+	}
+}
+
+// TestConcurrentDisagreeingContexts uses contexts that disagree on a
+// dimension value from many goroutines at once, while logging. Each
+// context's metrics must always be written with its own value. Run with
+// -race (just test-race) to catch data races.
+func TestConcurrentDisagreeingContexts(t *testing.T) {
+	var out syncBuffer
+	logger := emf.New(emf.WithWriter(&out), emf.WithoutDimensions()).Dimension("Worker", "default").Metric("m", 1)
+
+	const (
+		goroutines = 8
+		iterations = 25
+	)
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Go(func() {
+			worker := fmt.Sprintf("w%d", g)
+			ctx := logger.NewContext().Namespace(worker)
+			for i := range iterations {
+				ctx.Dimension("Worker", worker).Metric(fmt.Sprintf("%s_m%d", worker, i), i)
+				if i%5 == 0 {
+					logger.Log()
+				}
+			}
+		})
+	}
+	wg.Wait()
+	logger.Log()
+
+	lines := 0
+	for line := range bytes.Lines(out.buf.Bytes()) {
+		lines++
+		assertCompliant(t, line)
+		var doc struct {
+			Worker string
+			AWS    struct {
+				CloudWatchMetrics []struct{ Namespace string }
+			} `json:"_aws"`
+		}
+		if err := json.Unmarshal(line, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range doc.AWS.CloudWatchMetrics {
+			want := d.Namespace
+			if want == "aws-embedded-metrics" {
+				want = "default"
+			}
+			if doc.Worker != want {
+				t.Errorf("directive for %s on a line with Worker %s", d.Namespace, doc.Worker)
+			}
+		}
+	}
+	if lines == 0 {
+		t.Error("expected output")
 	}
 }

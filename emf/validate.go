@@ -35,20 +35,18 @@ var maxMetricMagnitude = math.Ldexp(1, 360)
 // Contexts, so metrics and dimensions don't overwrite each other. Its lock
 // guards all state shared by the Logger and its Contexts.
 type registry struct {
-	mu         sync.Mutex
-	logger     *Logger // owner, to find metric definitions in its contexts
-	onError    func(error)
-	pending    []error
-	dimensions map[string]bool
-	metrics    map[string]any   // the first value of each metric
-	more       map[string][]any // later values of repeated metrics, made when first needed
+	mu      sync.Mutex
+	logger  *Logger // owner, to find metric definitions in its contexts
+	onError func(error)
+	pending []error
+	metrics map[string]any   // the first value of each metric
+	more    map[string][]any // later values of repeated metrics, made when first needed
 }
 
 func newRegistry(onError func(error)) *registry {
 	return &registry{
-		onError:    onError,
-		dimensions: make(map[string]bool),
-		metrics:    make(map[string]any),
+		onError: onError,
+		metrics: make(map[string]any),
 	}
 }
 
@@ -132,6 +130,17 @@ func (r *registry) definition(name string) (MetricDefinition, bool) {
 	return MetricDefinition{}, false
 }
 
+// isDimension reports whether any of the logger's contexts has a dimension
+// with the given key.
+func (r *registry) isDimension(key string) bool {
+	for c := range r.logger.allContexts() {
+		if c.dimensionIndex(key) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *registry) isMetric(name string) bool {
 	_, ok := r.metrics[name]
 	return ok
@@ -168,7 +177,7 @@ func (r *registry) checkMetricName(name string, unit MetricUnit) bool {
 		r.invalid("skipped metric %q: name must be 1 to %d printable ASCII characters, not only whitespace", name, maxNameLen)
 	case name == metadataKey:
 		r.invalid("skipped metric %q: name is reserved", name)
-	case r.dimensions[name]:
+	case r.isDimension(name):
 		r.invalid("skipped metric %q: name is already a dimension", name)
 	case !validUnit(unit):
 		r.invalid("skipped metric %q: unknown unit %q", name, unit)
@@ -201,7 +210,7 @@ func (r *registry) checkProperty(key string) bool {
 		r.invalid("skipped property %q: key is reserved", key)
 	case r.isMetric(key):
 		r.invalid("skipped property %q: key is already a metric", key)
-	case r.dimensions[key]:
+	case r.isDimension(key):
 		r.invalid("skipped property %q: key is already a dimension", key)
 	default:
 		return true

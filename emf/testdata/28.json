@@ -1,0 +1,62 @@
+[
+  {
+    "Declined": 1,
+    "Provider": "card",
+    "Region": "au",
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "aws-embedded-metrics",
+          "Dimensions": [["Provider", "Region"]],
+          "Metrics": [
+            {
+              "Name": "Declined",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "Provider": "paypal",
+    "Refunds": 2,
+    "Region": "au",
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "aws-embedded-metrics",
+          "Dimensions": [["Provider", "Region"]],
+          "Metrics": [
+            {
+              "Name": "Refunds",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "Approved": 3,
+    "Provider": "paypal",
+    "Region": "nz",
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "aws-embedded-metrics",
+          "Dimensions": [["Region"]],
+          "Metrics": [
+            {
+              "Name": "Approved",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

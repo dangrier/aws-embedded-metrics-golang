@@ -87,10 +87,10 @@ more than once and the values are collected:
 logger.Put("Latency", 12.5).Put("Latency", 8.1) // logs "Latency":[12.5,8.1]
 ```
 
-The same name in two contexts is published in both namespaces, sharing all of its values. So a
-repeated name must use the same unit and resolution everywhere, or the new value is skipped and
-reported. The spec allows at most 100 values per metric, so longer lists are split across several
-lines.
+The same name in two contexts is published in both namespaces, sharing all of its values, even
+when the contexts are written on separate lines. So a repeated name must use the same unit and
+resolution everywhere, or the new value is skipped and reported. The spec allows at most 100 values
+per metric, so longer lists are split across several lines.
 
 ### High resolution
 
@@ -138,6 +138,17 @@ logger.NewContext().
 	Dimension("Provider", "card").
 	MetricAs("Declined", 1, emf.Count)
 logger.Log()
+```
+
+Each context keeps its own dimension values. Contexts that disagree on a dimension value (the same
+key with different values) are written on separate lines, so each context's metrics are published
+under its own value. Contexts that agree still share a line. Properties go on every line.
+
+```go
+logger := emf.New()
+logger.NewContext().Namespace("payments").Dimension("Provider", "card").Metric("Declined", 1)
+logger.NewContext().Namespace("payments").Dimension("Provider", "paypal").Metric("Refunds", 2)
+logger.Log() // two lines: one with "Provider":"card", one with "Provider":"paypal"
 ```
 
 ### Logging with defer
@@ -218,10 +229,11 @@ emf.New(emf.WithErrorHandler(func(err error) {
 
 A single call to `Log()` may write more than one line. The spec allows at most 100 metrics per log
 event, and 100 values per metric, and CloudWatch drops every metric in an event that has more. So if
-you log more than 100 metrics at once (across all contexts), or a metric with more than 100 values,
-they are split across several lines. Every line keeps the same timestamp, properties and dimensions,
-and each metric keeps its own namespace and dimensions. If your code reads the output (in tests, for
-example), expect one or more lines per `Log()`.
+you log more than 100 metrics at once (across all contexts that share a line), or a metric with more
+than 100 values, they are split across several lines. Contexts that disagree on a dimension value
+are also written on separate lines, and each of those is split the same way. Every line keeps the
+same timestamp and properties, and each metric keeps its own namespace, dimensions and dimension
+values. If your code reads the output (in tests, for example), expect one or more lines per `Log()`.
 
 ## Concurrency
 
