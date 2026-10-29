@@ -1,0 +1,90 @@
+name: Bug report
+description: Wrong output, missing metrics, a crash, or anything else that isn't working.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Bugs are quickest to fix when they come with a short program that shows the problem, and the line it wrote.
+
+        Found a security problem? Please [report it privately](https://github.com/dangrier/aws-embedded-metrics-golang/security/advisories/new) instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: Library version
+      description: Run `go list -m github.com/dangrier/aws-embedded-metrics-golang`.
+      placeholder: v1.3.1
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Run `go version`.
+      placeholder: go1.27.0 linux/amd64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Where does it run?
+      options:
+        - AWS Lambda
+        - Amazon ECS or Fargate
+        - Amazon EC2
+        - Amazon EKS or other Kubernetes
+        - Locally or in tests
+        - Somewhere else
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and where you noticed it, such as in the output, in CloudWatch or in your error handler.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Code to reproduce it
+      description: |
+        The smallest program that shows the problem. `emf.WithoutDimensions()` keeps the Lambda defaults out of the output, and `emf.WithErrorHandler(func(err error) { log.Println(err) })` prints anything the logger skipped.
+      render: go
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The line or lines the logger wrote. Remove anything private first.
+      render: json
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Errors from the error handler
+      description: Anything passed to your `WithErrorHandler` function, or "None".
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues, and this hasn't been reported.
+          required: true
+        - label: It still happens on the latest release.
