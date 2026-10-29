@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest something new, or a change to how the library works.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. The problem you're solving matters more than the exact API, so start there.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem or use case, not the solution. For example, "I reuse one logger across Lambda calls, and each call logs the earlier values again."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like the library to do?
+      description: How it could work. A sketch of the API is welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: official
+    attributes:
+      label: How do the official AWS libraries handle it?
+      description: If AWS's Node.js, Python, Java or .NET EMF library already does this, link to it or describe how. Leave it blank if you don't know.
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What do you do today instead?
+      description: Any workaround you use, and what's wrong with it.
+
+  - type: dropdown
+    id: compatibility
+    attributes:
+      label: Would it change anything for existing code?
+      description: Would code that already uses the library behave differently, or write different output, without being changed?
+      options:
+        - "No, it only adds something new"
+        - "Yes, existing code would behave differently"
+        - "Not sure"
+    validations:
+      required: true

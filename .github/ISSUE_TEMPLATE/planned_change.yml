@@ -1,0 +1,92 @@
+name: Planned change
+description: For maintainers. A change we've decided to make, with its compatibility assessment.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        After creating the issue, set its milestone and a `bug`, `enhancement`, `documentation` or `ci` label.
+
+  - type: textarea
+    id: change
+    attributes:
+      label: Change
+      description: What will change, including any new or changed API.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem it solves, with evidence such as a reproduction and its output, or how the official AWS libraries behave.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Bug
+        - Parity with the official AWS libraries
+        - Go idiom
+        - Docs
+        - Maintenance
+        - Breaking
+    validations:
+      required: true
+
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Effort
+      options:
+        - S (small)
+        - M (medium)
+        - L (large)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: breaking-in-effect
+    attributes:
+      label: Breaking in effect?
+      description: If someone upgrades without changing their code, could anything they rely on behave differently, even if it isn't documented? This is a wider test than a semver breaking change.
+      options:
+        - "No: nothing changes for existing code"
+        - "Low: a small, visible change, mostly correcting wrong data"
+        - "Possibly: depends on behaviour we haven't verified"
+        - "Yes: existing users will see a change"
+    validations:
+      required: true
+
+  - type: textarea
+    id: side-effect
+    attributes:
+      label: Likely side effect
+      description: What someone would notice after upgrading, such as different output, metrics moving to a new series, new error handler calls or more log lines. Write "None" if nothing changes. For an opt-in change, say what happens once it's turned on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rejected
+    attributes:
+      label: Designs ruled out
+      description: Simpler designs that were considered and rejected, and why.
+
+  - type: textarea
+    id: before-release
+    attributes:
+      label: To check before release
+      description: Anything to verify first, such as how CloudWatch behaves in a test account.
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      value: |
+        - [ ] Tests cover the change, and output changes are checked against the EMF spec
+        - [ ] README and Go doc comments match the change
+        - [ ] The PR has its release notes label
+    validations:
+      required: true

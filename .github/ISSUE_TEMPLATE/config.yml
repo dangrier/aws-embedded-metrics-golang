@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/dangrier/aws-embedded-metrics-golang/security/advisories/new
+    about: Please report security problems privately, not in a public issue.
+  - name: Documentation and examples
+    url: https://pkg.go.dev/github.com/dangrier/aws-embedded-metrics-golang/emf
+    about: The package docs, with runnable examples.
