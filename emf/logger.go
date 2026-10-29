@@ -219,6 +219,11 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 // accepts (14 days in the past to 2 hours in the future), or a line over
 // CloudWatch's 1 MB limit, is reported to the error handler, but the lines
 // are still written.
+//
+// A Logger isn't meant to be reused. Log writes every value added since New,
+// so calling it again writes the earlier values again, and the timestamp stays
+// at the time New was called (or the one set by WithTimestamp). Create a new
+// Logger for each unit of work, such as each Lambda invocation.
 func (l *Logger) Log() {
 	// Take a snapshot under the lock, then encode outside it so concurrent
 	// Log calls don't wait on each other. Writing has its own lock, so lines

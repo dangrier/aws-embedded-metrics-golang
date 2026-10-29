@@ -135,6 +135,9 @@ logger.Log()
 
 ### Logging with defer
 
+Create a new logger for each unit of work, such as a request or a batch, and call `Log()` once at
+the end:
+
 ```go
 func processOrder(id string) error {
 	metrics := emf.New().Namespace("api").Dimension("Operation", "ProcessOrder")
@@ -146,6 +149,15 @@ func processOrder(id string) error {
 	return nil
 }
 ```
+
+A logger isn't meant to be reused. Each `Log()` writes every value added since `New()`, so calling
+it again writes the earlier values again. A metric logged once before each of two `Log()` calls
+comes out as `"Requests":1`, then `"Requests":[1,1]`. Values keep building up for as long as the
+logger lives, and every line keeps the timestamp set when `New()` was called (or by
+`WithTimestamp`).
+
+In Lambda, create the logger inside the handler, not at package level or in `init`. A logger shared
+across invocations double counts, keeps growing, and stamps every metric with the cold-start time.
 
 ## Options
 
