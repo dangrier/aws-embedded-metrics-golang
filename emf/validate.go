@@ -93,9 +93,11 @@ func (r *registry) checkNamespace(namespace string) bool {
 	return true
 }
 
-func (r *registry) checkDimensionSet(dimensions []Dimension) bool {
-	if len(dimensions) > maxDimensionSetSize {
-		r.invalid("skipped dimension set: has %d dimensions, more than %d", len(dimensions), maxDimensionSetSize)
+// checkDimensionSet checks dimensions, with keys from dimensionKeys. The
+// size limit counts each key once.
+func (r *registry) checkDimensionSet(dimensions []Dimension, keys DimensionSet) bool {
+	if len(keys) > maxDimensionSetSize {
+		r.invalid("skipped dimension set: has more than %d keys", maxDimensionSetSize)
 		return false
 	}
 	for _, d := range dimensions {

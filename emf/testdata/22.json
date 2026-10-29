@@ -1,0 +1,30 @@
+{
+  "_aws": {
+    "Timestamp": "<<PRESENCE>>",
+    "CloudWatchMetrics": [
+      {
+        "Metrics": [
+          {
+            "Name": "m",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics",
+        "Dimensions": [["A"]]
+      },
+      {
+        "Metrics": [
+          {
+            "Name": "n",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "other",
+        "Dimensions": [["A"]]
+      }
+    ]
+  },
+  "A": "a",
+  "m": 1,
+  "n": 2
+}

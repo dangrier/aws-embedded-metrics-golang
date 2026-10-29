@@ -201,6 +201,68 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/18.json",
 	},
+	{
+		name: "repeated dimension, last value wins",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").Metric("A", 1).Dimension("Service", "cart")
+		},
+		expected: "testdata/19.json",
+	},
+	{
+		name: "repeated dimension set in another order",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.
+				DimensionSet(emf.NewDimension("A", "a"), emf.NewDimension("B", "b")).
+				DimensionSet(emf.NewDimension("B", "b2"), emf.NewDimension("A", "a2")).
+				Metric("m", 1)
+		},
+		expected: "testdata/20.json",
+	},
+	{
+		name: "repeated key in one dimension set",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.DimensionSet(emf.NewDimension("A", "x"), emf.NewDimension("A", "y")).Metric("m", 1)
+		},
+		expected: "testdata/21.json",
+	},
+	{
+		name: "lambda default dimension set added again",
+		env: map[string]string{
+			"AWS_LAMBDA_FUNCTION_NAME":        "some-func-name",
+			"AWS_EXECUTION_ENV":               "golang",
+			"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
+			"AWS_LAMBDA_FUNCTION_VERSION":     "1",
+			"AWS_LAMBDA_LOG_STREAM_NAME":      "log/stream",
+		},
+		given: func(logger *emf.Logger) {
+			logger.
+				DimensionSet(
+					emf.NewDimension("ServiceType", "AWS::Lambda::Function"),
+					emf.NewDimension("ServiceName", "some-func-name")).
+				Metric("foo", 33)
+		},
+		expected: "testdata/9.json",
+	},
+	{
+		name: "same dimension set in two contexts",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("A", "a").Dimension("A", "a").Metric("m", 1)
+			logger.NewContext().Namespace("other").Dimension("A", "a").Dimension("A", "a").Metric("n", 2)
+		},
+		expected: "testdata/22.json",
+	},
 }
 
 // run sets up the environment, logs and returns the output.

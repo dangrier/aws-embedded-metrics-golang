@@ -1,0 +1,19 @@
+{
+  "_aws": {
+    "Timestamp": "<<PRESENCE>>",
+    "CloudWatchMetrics": [
+      {
+        "Metrics": [
+          {
+            "Name": "A",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics",
+        "Dimensions": [["Service"]]
+      }
+    ]
+  },
+  "Service": "cart",
+  "A": 1
+}
