@@ -327,17 +327,39 @@ func (l *Logger) groupEvents(events []map[string]any, g contextGroup, rounds int
 // directives returns the directive of each context with metrics, and
 // whether any two of those contexts disagree on a dimension value.
 func (l *Logger) directives() (directives []MetricDirective, disagree bool) {
+	var first *Context
+	var values map[string]any // dimension values seen so far, made once a second context has metrics
 	for c := range l.allContexts() {
 		if len(c.metricDirective.Metrics) == 0 {
 			continue
 		}
 		directives = append(directives, c.metricDirective)
-		// Only check once more than one context has metrics.
-		if len(directives) > 1 && !disagree {
-			disagree = c.disagreesBefore(l)
+		switch {
+		case disagree:
+		case first == nil:
+			first = c
+		default:
+			if values == nil {
+				values = make(map[string]any, len(first.dimensions)+len(c.dimensions))
+				addDimensions(values, first)
+			}
+			disagree = !addDimensions(values, c)
 		}
 	}
 	return directives, disagree
+}
+
+// addDimensions adds c's dimension values to values, and reports whether
+// they agree with the values already there. It stops at the first value
+// that doesn't agree.
+func addDimensions(values map[string]any, c *Context) bool {
+	for _, d := range c.dimensions {
+		if v, ok := values[d.key]; ok && v != d.value {
+			return false
+		}
+		values[d.key] = d.value
+	}
+	return true
 }
 
 // contextGroup is a set of contexts with metrics whose dimension values
@@ -345,6 +367,7 @@ func (l *Logger) directives() (directives []MetricDirective, disagree bool) {
 type contextGroup struct {
 	contexts   []*Context // nil means every context with metrics
 	directives []MetricDirective
+	values     map[string]any // dimension values of the contexts, while grouping
 }
 
 // has reports whether c is in the group.
@@ -358,8 +381,8 @@ func (g contextGroup) has(c *Context) bool {
 // agrees reports whether c's dimension values agree with every context in
 // the group.
 func (g contextGroup) agrees(c *Context) bool {
-	for _, other := range g.contexts {
-		if c.disagrees(other) {
+	for _, d := range c.dimensions {
+		if v, ok := g.values[d.key]; ok && v != d.value {
 			return false
 		}
 	}
@@ -379,8 +402,9 @@ func (l *Logger) groupContexts() []contextGroup {
 		i := slices.IndexFunc(groups, func(g contextGroup) bool { return g.agrees(c) })
 		if i < 0 {
 			i = len(groups)
-			groups = append(groups, contextGroup{})
+			groups = append(groups, contextGroup{values: make(map[string]any)})
 		}
+		addDimensions(groups[i].values, c)
 		groups[i].contexts = append(groups[i].contexts, c)
 		groups[i].directives = append(groups[i].directives, c.metricDirective)
 	}
@@ -599,31 +623,6 @@ func (c *Context) copyDimensions(values map[string]any) {
 	for _, d := range c.dimensions {
 		values[d.key] = d.value
 	}
-}
-
-// disagrees reports whether c and other set the same dimension key to
-// different values.
-func (c *Context) disagrees(other *Context) bool {
-	for _, d := range c.dimensions {
-		if i := other.dimensionIndex(d.key); i >= 0 && other.dimensions[i].value != d.value {
-			return true
-		}
-	}
-	return false
-}
-
-// disagreesBefore reports whether c disagrees with a context with metrics
-// that comes before it in l.allContexts.
-func (c *Context) disagreesBefore(l *Logger) bool {
-	for other := range l.allContexts() {
-		if other == c {
-			return false
-		}
-		if len(other.metricDirective.Metrics) > 0 && c.disagrees(other) {
-			return true
-		}
-	}
-	return false
 }
 
 // dimensionKeys returns the keys of dimensions in order, each once. It stops

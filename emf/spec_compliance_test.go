@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"os"
 	"slices"
 	"strings"
@@ -635,4 +636,90 @@ func TestDisagreeingContextsSplit(t *testing.T) {
 			t.Errorf("Refunds: got %+v", r)
 		}
 	})
+}
+
+// TestDisagreeingContextsRandom builds random contexts that often disagree
+// on dimension values, and checks every line is spec compliant, every
+// directive's dimensions have its own context's values, and every metric is
+// written for each context that logged it.
+func TestDisagreeingContextsRandom(t *testing.T) {
+	type context struct {
+		dimension func(key, value string)
+		put       func(name string, value float64)
+		values    map[string]string
+		metrics   map[string]bool
+	}
+
+	for seed := range 500 {
+		r := rand.New(rand.NewPCG(uint64(seed), 0))
+		var buf bytes.Buffer
+		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions()).Namespace("c0")
+		contexts := []*context{{
+			dimension: func(k, v string) { logger.Dimension(k, v) },
+			put:       func(n string, v float64) { logger.Put(n, v) },
+		}}
+		for i := range 1 + r.IntN(4) {
+			c := logger.NewContext().Namespace(fmt.Sprintf("c%d", i+1))
+			contexts = append(contexts, &context{
+				dimension: func(k, v string) { c.Dimension(k, v) },
+				put:       func(n string, v float64) { c.Put(n, v) },
+			})
+		}
+		for _, c := range contexts {
+			c.values, c.metrics = map[string]string{}, map[string]bool{}
+		}
+
+		for range r.IntN(60) {
+			c := contexts[r.IntN(len(contexts))]
+			if r.IntN(3) == 0 {
+				key, value := fmt.Sprintf("d%d", r.IntN(3)), fmt.Sprintf("v%d", r.IntN(3))
+				c.dimension(key, value)
+				c.values[key] = value
+				continue
+			}
+			// Up to 130 names, some with more than 100 values, so lines
+			// are also split by metric count and by rounds of values.
+			name := fmt.Sprintf("m%d", r.IntN(130))
+			for range 1 + r.IntN(2)*r.IntN(120) {
+				c.put(name, 1)
+			}
+			c.metrics[name] = true
+		}
+		logger.Log()
+
+		logged := map[string]bool{} // namespace and metric name
+		for line := range bytes.Lines(buf.Bytes()) {
+			assertCompliant(t, line)
+			var doc map[string]any
+			if err := json.Unmarshal(line, &doc); err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range doc["_aws"].(map[string]any)["CloudWatchMetrics"].([]any) {
+				dir := d.(map[string]any)
+				namespace := dir["Namespace"].(string)
+				var i int
+				if _, err := fmt.Sscanf(namespace, "c%d", &i); err != nil {
+					t.Fatal(err)
+				}
+				for _, set := range dir["Dimensions"].([]any) {
+					for _, k := range set.([]any) {
+						key := k.(string)
+						if want := contexts[i].values[key]; doc[key] != want {
+							t.Fatalf("seed %d: %s has %s=%v on its line, want %s\n%s", seed, namespace, key, doc[key], want, buf.Bytes())
+						}
+					}
+				}
+				for _, m := range dir["Metrics"].([]any) {
+					logged[namespace+"/"+m.(map[string]any)["Name"].(string)] = true
+				}
+			}
+		}
+		for i, c := range contexts {
+			for name := range c.metrics {
+				if !logged[fmt.Sprintf("c%d/%s", i, name)] {
+					t.Fatalf("seed %d: metric %s of c%d not logged\n%s", seed, name, i, buf.Bytes())
+				}
+			}
+		}
+	}
 }
