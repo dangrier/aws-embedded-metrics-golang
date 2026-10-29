@@ -1,0 +1,19 @@
+{
+  "_aws": {
+    "Timestamp": "<<PRESENCE>>",
+    "CloudWatchMetrics": [
+      {
+        "Namespace": "aws-embedded-metrics",
+        "Dimensions": [["Service"]],
+        "Metrics": [
+          {
+            "Name": "Latency",
+            "Unit": "None"
+          }
+        ]
+      }
+    ]
+  },
+  "Latency": 5,
+  "Service": "dim"
+}

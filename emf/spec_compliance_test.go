@@ -160,7 +160,10 @@ func FuzzSpecCompliance(f *testing.F) {
 		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
 			errs = append(errs, err)
 		}))
+		// The property is set first and last, so dimensions and metrics with
+		// its key replace it, and it can't replace them.
 		logger.
+			Property(propKey, "first").
 			Namespace(namespace).
 			Dimension(dimKey, dimValue).
 			DimensionSet(emf.NewDimension(dimKey, dimValue), emf.NewDimension(dimKey, dimValue)).
@@ -289,6 +292,145 @@ func TestErrorHandler(t *testing.T) {
 			Log()
 		assertCompliant(t, buf.Bytes())
 	})
+}
+
+// TestPropertyReplaced checks a dimension or metric with the same key as a
+// property is kept, and reported once, unless the property is one of the
+// Lambda properties New adds.
+func TestPropertyReplaced(t *testing.T) {
+	lambda := map[string]string{
+		"AWS_LAMBDA_FUNCTION_NAME":        "some-func-name",
+		"AWS_EXECUTION_ENV":               "golang",
+		"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
+		"AWS_LAMBDA_FUNCTION_VERSION":     "1",
+		"AWS_LAMBDA_LOG_STREAM_NAME":      "log/stream",
+		"_X_AMZN_TRACE_ID":                "Root=1;Sampled=1",
+	}
+	tcs := []struct {
+		name     string
+		env      map[string]string
+		given    func(*emf.Logger)
+		reported int
+		want     []string // in the output
+	}{
+		{
+			name:     "dimension",
+			given:    func(l *emf.Logger) { l.Property("dup", "p").Dimension("dup", "v") },
+			reported: 1,
+			want:     []string{`"dup":"v"`},
+		},
+		{
+			name: "dimension set",
+			given: func(l *emf.Logger) {
+				l.Property("dup", "p").DimensionSet(emf.NewDimension("a", "b"), emf.NewDimension("dup", "v"))
+			},
+			reported: 1,
+			want:     []string{`"dup":"v"`, `"a":"b"`},
+		},
+		{
+			name:     "metric",
+			given:    func(l *emf.Logger) { l.Property("dup", "p").Metric("dup", 7) },
+			reported: 1,
+			want:     []string{`"dup":7`},
+		},
+		{
+			name: "context dimension",
+			given: func(l *emf.Logger) {
+				l.Property("dup", "p")
+				l.NewContext().Dimension("dup", "v").Metric("ctx", 1)
+			},
+			reported: 1,
+			want:     []string{`"dup":"v"`},
+		},
+		{
+			name: "dimension repeated, in two contexts",
+			given: func(l *emf.Logger) {
+				l.Property("dup", "p").Dimension("dup", "v").Dimension("dup", "w")
+				l.NewContext().Dimension("dup", "x").Metric("ctx", 1)
+			},
+			reported: 1,
+			want:     []string{`"dup":"w"`, `"dup":"x"`},
+		},
+		{
+			name: "metric repeated, in two contexts",
+			given: func(l *emf.Logger) {
+				l.Property("dup", "p").Put("dup", 1).Put("dup", 2)
+				l.NewContext().Put("dup", 3)
+			},
+			reported: 1,
+			want:     []string{`"dup":[1,2,3]`},
+		},
+		{
+			name: "skipped dimension set",
+			given: func(l *emf.Logger) {
+				l.Property("dup", "p").DimensionSet(emf.NewDimension("dup", "v"), emf.NewDimension(":bad", "v"))
+			},
+			reported: 1, // only that the set was skipped
+			want:     []string{`"dup":"p"`},
+		},
+		{
+			name:     "skipped metric",
+			given:    func(l *emf.Logger) { l.Property("dup", "p").MetricFloat("dup", math.NaN()) },
+			reported: 1, // only that the metric was skipped
+			want:     []string{`"dup":"p"`},
+		},
+		{
+			name: "Lambda properties",
+			env:  lambda,
+			given: func(l *emf.Logger) {
+				l.Dimension("functionVersion", "v").
+					DimensionSet(emf.NewDimension("executionEnvironment", "e"), emf.NewDimension("logStreamId", "s")).
+					Dimension("traceId", "t").
+					Metric("memorySize", 256)
+			},
+			want: []string{`"functionVersion":"v"`, `"executionEnvironment":"e"`, `"logStreamId":"s"`, `"traceId":"t"`, `"memorySize":256`},
+		},
+		{
+			name: "Lambda property set with Property",
+			env:  lambda,
+			given: func(l *emf.Logger) {
+				l.Property("functionVersion", "mine").Dimension("functionVersion", "v")
+			},
+			reported: 1,
+			want:     []string{`"functionVersion":"v"`},
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			var buf bytes.Buffer
+			var errs []error
+			opts := []emf.LoggerOption{emf.WithWriter(&buf), emf.WithErrorHandler(func(err error) {
+				errs = append(errs, err)
+			})}
+			if tc.env == nil {
+				opts = append(opts, emf.WithoutDimensions())
+			}
+			logger := emf.New(opts...)
+			tc.given(logger)
+			logger.Metric("good", 1).Log()
+
+			if len(errs) != tc.reported {
+				t.Errorf("expected %d errors, got %d: %v", tc.reported, len(errs), errs)
+			}
+			for _, err := range errs {
+				if !errors.Is(err, emf.ErrInvalid) {
+					t.Errorf("error %v does not wrap ErrInvalid", err)
+				}
+			}
+			for line := range bytes.Lines(buf.Bytes()) {
+				assertCompliant(t, line)
+			}
+			for _, want := range tc.want {
+				if !bytes.Contains(buf.Bytes(), []byte(want)) {
+					t.Errorf("expected %s in output: %s", want, buf.Bytes())
+				}
+			}
+		})
+	}
 }
 
 // TestTimestampWindow checks timestamps CloudWatch won't publish are

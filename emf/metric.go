@@ -104,6 +104,10 @@ func (c *Context) add(name string, value any, unit MetricUnit, resolution int) {
 
 	def := MetricDefinition{Name: name, Unit: unit, StorageResolution: resolution}
 	if !r.isMetric(name) {
+		if r.replacesProperty(name) {
+			// The metric is kept, but replaces the property on its lines.
+			r.invalid("metric %q replaces the property with the same key on the lines the metric is written on", name)
+		}
 		c.metricDirective.Metrics = append(c.metricDirective.Metrics, def)
 		r.metrics[name] = value
 		return

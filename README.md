@@ -126,6 +126,13 @@ searching in CloudWatch Logs Insights.
 logger.Property("requestId", requestID)
 ```
 
+A property shares the log line with dimensions and metrics, so each key can only hold one of them.
+A property with the key of a metric or dimension is skipped and reported. A dimension or metric
+added later with a property's key is kept, and replaces the property, which is reported too. A
+dimension replaces it on every line, and a metric on the lines the metric is written on. The Lambda
+properties the library adds (see [Lambda defaults](#lambda-defaults)) can be replaced without a
+report.
+
 ### Namespaces and contexts
 
 Metrics go in the `aws-embedded-metrics` namespace unless you set one. A context adds metrics with
@@ -207,13 +214,14 @@ Output always follows the [EMF specification](https://docs.aws.amazon.com/Amazon
 Input that would break it is skipped, and the rest is still logged. This includes NaN or infinite
 values, invalid names, unknown units, and a name used for both a metric and a dimension.
 
-Two limits are about when or how much you log, so the library reports them but still writes the
-line:
+Some input is reported, but still written:
 
 - **Timestamp:** CloudWatch only publishes metrics with a timestamp from 14 days in the past to
   2 hours in the future. It keeps a line outside that window as a log event, but won't turn it into
   metrics.
 - **Size:** CloudWatch Logs rejects log lines over 1 MB, usually because of very large properties.
+- **Replaced property:** a dimension or metric with the same key as a property replaces it. See
+  [Properties](#properties).
 
 Use `WithErrorHandler` to find out about any of these. The errors wrap `emf.ErrInvalid`:
 

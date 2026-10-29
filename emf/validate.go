@@ -11,7 +11,9 @@ import (
 )
 
 // ErrInvalid is wrapped by every error passed to the WithErrorHandler
-// handler for input the logger skipped because it would break the EMF spec.
+// handler about input: input the logger skipped because it would break the
+// EMF spec, and input it kept but reported, such as a dimension or metric
+// that replaces a property.
 var ErrInvalid = errors.New("emf: invalid input")
 
 // Limits from the EMF specification.
@@ -139,6 +141,15 @@ func (r *registry) isDimension(key string) bool {
 		}
 	}
 	return false
+}
+
+// replacesProperty reports whether a new dimension or metric with the given
+// key replaces a property set with Property. Only the first dimension or
+// metric with the key does, since after that the property is already
+// replaced. The properties New adds may be replaced without a report.
+func (r *registry) replacesProperty(key string) bool {
+	_, ok := r.logger.properties[key]
+	return ok && !r.isDimension(key) && !r.isMetric(key)
 }
 
 func (r *registry) isMetric(name string) bool {

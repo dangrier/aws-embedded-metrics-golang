@@ -20,7 +20,8 @@ type Logger struct {
 	timestamp         int64
 	defaultContext    Context
 	contexts          []*Context
-	properties        map[string]any
+	defaultProperties map[string]any // the Lambda properties and traceId, set by New
+	properties        map[string]any // set with Property
 	withoutDimensions bool
 	logGroupName      string
 	onError           func(error)
@@ -76,8 +77,9 @@ func WithLogGroup(logGroup string) LoggerOption {
 }
 
 // WithErrorHandler sets a function that is called when the logger skips
-// input that would break the EMF spec, or fails to write. Skipped input
-// errors wrap ErrInvalid. Without a handler, these errors are ignored.
+// input that would break the EMF spec, when a dimension or metric replaces a
+// property with the same key, or when it fails to write. Errors about input
+// wrap ErrInvalid. Without a handler, these errors are ignored.
 // The handler may use the logger. If the logger is used from several
 // goroutines, the handler may be called from several goroutines at once.
 func WithErrorHandler(fn func(error)) LoggerOption {
@@ -105,17 +107,17 @@ func New(opts ...LoggerOption) *Logger {
 		// set default properties for lambda function
 		fnName := os.Getenv("AWS_LAMBDA_FUNCTION_NAME")
 		if fnName != "" {
-			l.setProperty("executionEnvironment", os.Getenv("AWS_EXECUTION_ENV"))
-			l.setProperty("memorySize", os.Getenv("AWS_LAMBDA_FUNCTION_MEMORY_SIZE"))
-			l.setProperty("functionVersion", os.Getenv("AWS_LAMBDA_FUNCTION_VERSION"))
-			l.setProperty("logStreamId", os.Getenv("AWS_LAMBDA_LOG_STREAM_NAME"))
+			l.setDefaultProperty("executionEnvironment", os.Getenv("AWS_EXECUTION_ENV"))
+			l.setDefaultProperty("memorySize", os.Getenv("AWS_LAMBDA_FUNCTION_MEMORY_SIZE"))
+			l.setDefaultProperty("functionVersion", os.Getenv("AWS_LAMBDA_FUNCTION_VERSION"))
+			l.setDefaultProperty("logStreamId", os.Getenv("AWS_LAMBDA_LOG_STREAM_NAME"))
 		}
 	}
 
 	// only collect traces which have been sampled
 	amznTraceID := os.Getenv("_X_AMZN_TRACE_ID")
 	if strings.Contains(amznTraceID, "Sampled=1") {
-		l.setProperty("traceId", amznTraceID)
+		l.setDefaultProperty("traceId", amznTraceID)
 	}
 
 	l.registry = newRegistry(l.onError)
@@ -145,23 +147,28 @@ func (l *Logger) Namespace(namespace string) *Logger {
 }
 
 // Property sets property. A property can't use the name of a metric or
-// dimension.
+// dimension, so it is skipped and reported. A dimension or metric added
+// later with the same key is kept and replaces the property, and that is
+// reported too.
 func (l *Logger) Property(key, value string) *Logger {
 	l.registry.do(func() {
 		if l.registry.checkProperty(key) {
-			l.setProperty(key, value)
+			if l.properties == nil {
+				l.properties = make(map[string]any)
+			}
+			l.properties[key] = value
 		}
 	})
 	return l
 }
 
-// setProperty sets a property whose key is already checked. It must be
-// called while holding the registry lock, or from New.
-func (l *Logger) setProperty(key, value string) {
-	if l.properties == nil {
-		l.properties = make(map[string]any)
+// setDefaultProperty sets one of the properties New adds. A dimension or
+// metric may replace it without being reported.
+func (l *Logger) setDefaultProperty(key, value string) {
+	if l.defaultProperties == nil {
+		l.defaultProperties = make(map[string]any)
 	}
-	l.properties[key] = value
+	l.defaultProperties[key] = value
 }
 
 // Dimension adds single dimension on default context. See DimensionSet for
@@ -174,7 +181,8 @@ func (l *Logger) Dimension(key, value string) *Logger {
 // is invalid, the whole set is skipped. A key given more than once is added
 // once, and the last value wins. If the context already has a set with the
 // same keys, in any order, the set isn't added again, but the values are
-// updated.
+// updated. A key that is already a property replaces it, and that is
+// reported.
 func (l *Logger) DimensionSet(dimensions ...Dimension) *Logger {
 	l.registry.do(func() { l.defaultContext.dimensionSet(dimensions) })
 	return l
@@ -502,7 +510,7 @@ func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricD
 // same key, and the group's own dimension values replace those from dims.
 // If dims is nil, the default context is the only context.
 func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims map[string]any, round int) map[string]any {
-	size := len(l.properties) + len(dims) + 1
+	size := len(l.defaultProperties) + len(l.properties) + len(dims) + 1
 	if dims == nil {
 		size += len(l.defaultContext.dimensions)
 	}
@@ -510,6 +518,7 @@ func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims 
 		size += len(d.Metrics)
 	}
 	values := make(map[string]any, size)
+	maps.Copy(values, l.defaultProperties)
 	maps.Copy(values, l.properties)
 	if dims == nil {
 		l.defaultContext.copyDimensions(values)
@@ -562,7 +571,8 @@ func (c *Context) Dimension(key, value string) *Context {
 // is invalid, the whole set is skipped. A key given more than once is added
 // once, and the last value wins. If the context already has a set with the
 // same keys, in any order, the set isn't added again, but the values are
-// updated.
+// updated. A key that is already a property replaces it, and that is
+// reported.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
 	c.registry.do(func() { c.dimensionSet(dimensions) })
 	return c
@@ -602,6 +612,12 @@ func (c *Context) dimensionSet(dimensions []Dimension) {
 	set := dimensionKeys(dimensions)
 	if !c.registry.checkDimensionSet(dimensions, set) {
 		return
+	}
+	// The dimension is kept, but the property is no longer logged.
+	for _, key := range set {
+		if c.registry.replacesProperty(key) {
+			c.registry.invalid("dimension %q replaces the property with the same key", key)
+		}
 	}
 	for _, d := range dimensions {
 		c.setDimension(d.Key, d.Value)

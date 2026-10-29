@@ -363,6 +363,17 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/30.json",
 	},
+	{
+		name: "dimension and metric replace properties",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Property("Service", "prop").Dimension("Service", "dim")
+			logger.Property("Latency", "prop").Metric("Latency", 5)
+		},
+		expected: "testdata/31.json",
+	},
 }
 
 // run sets up the environment, logs and returns the output.
