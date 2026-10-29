@@ -284,7 +284,7 @@ func (l *Logger) Log() {
 // only ever appended to, so the snapshot stays valid after the lock is
 // released.
 func (l *Logger) snapshot() []map[string]any {
-	directives, disagree := l.directives()
+	directives := l.directives()
 	if len(directives) == 0 {
 		return nil
 	}
@@ -298,55 +298,86 @@ func (l *Logger) snapshot() []map[string]any {
 		rounds = max(rounds, (l.registry.valueCount(name)+maxValuesPerMetric-1)/maxValuesPerMetric)
 	}
 
+	// The dimension values every line carries. With only the default
+	// context, its values are copied straight into each line instead, and
+	// there are no other contexts to disagree with.
+	var dims map[string]any
+	disagree := false
+	if len(l.contexts) > 0 {
+		dims, disagree = l.lineDimensions()
+	}
+
 	// Usually the contexts agree on every dimension value, so they share
 	// lines. Contexts that disagree are written on separate lines.
 	if !disagree {
-		return l.groupEvents(nil, contextGroup{directives: directives}, rounds)
+		return l.groupEvents(nil, contextGroup{directives: directives}, dims, rounds)
 	}
 	var events []map[string]any
 	for _, g := range l.groupContexts() {
-		events = l.groupEvents(events, g, rounds)
+		events = l.groupEvents(events, g, dims, rounds)
 	}
 	return events
 }
 
+// lineDimensions returns the dimension values of every context, for keys
+// that a line's own contexts don't set, and whether any two contexts with
+// metrics disagree on a value. Later contexts with metrics replace earlier
+// ones. A context without metrics only adds keys no context with metrics
+// sets, so it can't change the value a context with metrics is written with.
+func (l *Logger) lineDimensions() (dims map[string]any, disagree bool) {
+	size := 0
+	for c := range l.allContexts() {
+		size = max(size, len(c.dimensions))
+	}
+	dims = make(map[string]any, size)
+	var without []*Context
+	for c := range l.allContexts() {
+		if len(c.metricDirective.Metrics) == 0 {
+			without = append(without, c)
+			continue
+		}
+		for _, d := range c.dimensions {
+			if v, ok := dims[d.key]; ok && v != d.value {
+				disagree = true
+			}
+			dims[d.key] = d.value
+		}
+	}
+	// Later contexts without metrics win among themselves, so add them last
+	// first, keeping keys that are already set.
+	for _, c := range slices.Backward(without) {
+		for _, d := range c.dimensions {
+			if _, ok := dims[d.key]; !ok {
+				dims[d.key] = d.value
+			}
+		}
+	}
+	return dims, disagree
+}
+
 // groupEvents appends the root objects of a group's log events to events.
-func (l *Logger) groupEvents(events []map[string]any, g contextGroup, rounds int) []map[string]any {
+func (l *Logger) groupEvents(events []map[string]any, g contextGroup, dims map[string]any, rounds int) []map[string]any {
 	for round := range rounds {
 		directives := g.directives
 		if round > 0 {
 			directives = l.directivesInRound(g.directives, round)
 		}
 		for event := range splitDirectives(directives, maxMetricsPerEvent) {
-			events = append(events, l.eventValues(event, g, round))
+			events = append(events, l.eventValues(event, g, dims, round))
 		}
 	}
 	return events
 }
 
-// directives returns the directive of each context with metrics, and
-// whether any two of those contexts disagree on a dimension value.
-func (l *Logger) directives() (directives []MetricDirective, disagree bool) {
-	var first *Context
-	var values map[string]any // dimension values seen so far, made once a second context has metrics
+// directives returns the directive of each context with metrics.
+func (l *Logger) directives() []MetricDirective {
+	var directives []MetricDirective
 	for c := range l.allContexts() {
-		if len(c.metricDirective.Metrics) == 0 {
-			continue
-		}
-		directives = append(directives, c.metricDirective)
-		switch {
-		case disagree:
-		case first == nil:
-			first = c
-		default:
-			if values == nil {
-				values = make(map[string]any, len(first.dimensions)+len(c.dimensions))
-				addDimensions(values, first)
-			}
-			disagree = !addDimensions(values, c)
+		if len(c.metricDirective.Metrics) > 0 {
+			directives = append(directives, c.metricDirective)
 		}
 	}
-	return directives, disagree
+	return directives
 }
 
 // addDimensions adds c's dimension values to values, and reports whether
@@ -365,17 +396,9 @@ func addDimensions(values map[string]any, c *Context) bool {
 // contextGroup is a set of contexts with metrics whose dimension values
 // agree, so their directives can share log lines.
 type contextGroup struct {
-	contexts   []*Context // nil means every context with metrics
+	contexts   []*Context // nil when every context with metrics agrees
 	directives []MetricDirective
 	values     map[string]any // dimension values of the contexts, while grouping
-}
-
-// has reports whether c is in the group.
-func (g contextGroup) has(c *Context) bool {
-	if g.contexts == nil {
-		return len(c.metricDirective.Metrics) > 0
-	}
-	return slices.Contains(g.contexts, c)
 }
 
 // agrees reports whether c's dimension values agree with every context in
@@ -476,27 +499,25 @@ func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricD
 // eventValues returns the root object of one log event for a group. It holds
 // every property and dimension, and the values for the round of the metrics
 // its directives refer to. A dimension value replaces a property with the
-// same key, and the group's own dimension values replace those of other
-// contexts.
-func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, round int) map[string]any {
-	size := len(l.properties) + 1
-	for c := range l.allContexts() {
-		size += len(c.dimensions)
+// same key, and the group's own dimension values replace those from dims.
+// If dims is nil, the default context is the only context.
+func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims map[string]any, round int) map[string]any {
+	size := len(l.properties) + len(dims) + 1
+	if dims == nil {
+		size += len(l.defaultContext.dimensions)
 	}
 	for _, d := range directives {
 		size += len(d.Metrics)
 	}
 	values := make(map[string]any, size)
 	maps.Copy(values, l.properties)
-	for c := range l.allContexts() {
-		if !g.has(c) {
-			c.copyDimensions(values)
-		}
+	if dims == nil {
+		l.defaultContext.copyDimensions(values)
+	} else {
+		maps.Copy(values, dims)
 	}
-	for c := range l.allContexts() {
-		if g.has(c) {
-			c.copyDimensions(values)
-		}
+	for _, c := range g.contexts {
+		c.copyDimensions(values)
 	}
 	for _, d := range directives {
 		for _, m := range d.Metrics {

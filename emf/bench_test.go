@@ -96,3 +96,36 @@ func BenchmarkLogParallel(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkLogContexts measures Log with many contexts, each with a metric
+// and ten dimensions. Contexts that agree on their dimension values share
+// lines. Contexts that disagree are each written on a separate line.
+func BenchmarkLogContexts(b *testing.B) {
+	for _, agree := range []bool{true, false} {
+		for _, n := range []int{10, 100} {
+			mode := "agree"
+			if !agree {
+				mode = "disagree"
+			}
+			b.Run(fmt.Sprintf("%s/contexts=%d", mode, n), func(b *testing.B) {
+				logger := emf.New(emf.WithWriter(io.Discard), emf.WithoutDimensions())
+				for i := range n {
+					worker := "all"
+					if !agree {
+						worker = fmt.Sprintf("w%d", i)
+					}
+					ctx := logger.NewContext().Dimension("Worker", worker)
+					for k := range 9 {
+						ctx.Dimension(fmt.Sprintf("d%d", k), "v")
+					}
+					ctx.Metric(fmt.Sprintf("m%d", i), i)
+				}
+
+				b.ReportAllocs()
+				for b.Loop() {
+					logger.Log()
+				}
+			})
+		}
+	}
+}
