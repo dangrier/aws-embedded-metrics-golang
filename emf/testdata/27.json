@@ -1,0 +1,51 @@
+[
+  {
+    "Declined": 1,
+    "Latency": [
+      10,
+      20
+    ],
+    "Provider": "card",
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "a",
+          "Dimensions": [["Provider"]],
+          "Metrics": [
+            {
+              "Name": "Latency",
+              "Unit": "None"
+            },
+            {
+              "Name": "Declined",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "Latency": [
+      10,
+      20
+    ],
+    "Provider": "paypal",
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "b",
+          "Dimensions": [["Provider"]],
+          "Metrics": [
+            {
+              "Name": "Latency",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

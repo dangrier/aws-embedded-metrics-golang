@@ -1,0 +1,51 @@
+[
+  {
+    "Approved": 3,
+    "Declined": 1,
+    "Provider": "card",
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "a",
+          "Dimensions": [["Provider"]],
+          "Metrics": [
+            {
+              "Name": "Declined",
+              "Unit": "None"
+            }
+          ]
+        },
+        {
+          "Namespace": "c",
+          "Dimensions": [["Provider"]],
+          "Metrics": [
+            {
+              "Name": "Approved",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "Provider": "paypal",
+    "Refunds": 2,
+    "_aws": {
+      "Timestamp": "<<PRESENCE>>",
+      "CloudWatchMetrics": [
+        {
+          "Namespace": "b",
+          "Dimensions": [["Provider"]],
+          "Metrics": [
+            {
+              "Name": "Refunds",
+              "Unit": "None"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

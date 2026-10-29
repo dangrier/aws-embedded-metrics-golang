@@ -1,0 +1,32 @@
+{
+  "Declined": 1,
+  "Provider": "card",
+  "Refunds": 2,
+  "Region": "au",
+  "Stage": "prod",
+  "_aws": {
+    "Timestamp": "<<PRESENCE>>",
+    "CloudWatchMetrics": [
+      {
+        "Namespace": "a",
+        "Dimensions": [["Provider"], ["Region"]],
+        "Metrics": [
+          {
+            "Name": "Declined",
+            "Unit": "None"
+          }
+        ]
+      },
+      {
+        "Namespace": "b",
+        "Dimensions": [["Provider"], ["Stage"]],
+        "Metrics": [
+          {
+            "Name": "Refunds",
+            "Unit": "None"
+          }
+        ]
+      }
+    ]
+  }
+}

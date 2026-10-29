@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +88,9 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 func TestSpecCompliance(t *testing.T) {
 	for _, tc := range emfTestCases {
 		t.Run(tc.name, func(t *testing.T) {
-			assertCompliant(t, tc.run(t))
+			for line := range bytes.Lines(tc.run(t)) {
+				assertCompliant(t, line)
+			}
 		})
 	}
 
@@ -136,18 +140,20 @@ func TestSpecCompliance(t *testing.T) {
 // output is always spec compliant. Anything invalid must be skipped and
 // reported to the error handler. Run it with: just fuzz
 func FuzzSpecCompliance(f *testing.F) {
-	f.Add("ns", "dimKey", "dimValue", "intMetric", 1, "floatMetric", 1.5, "None", "prop", uint8(0))
-	f.Add("aws-embedded-metrics", "Service", "api", "latency", 250, "size", 1024.0, "Milliseconds", "requestId", uint8(0))
-	f.Add("ns", "same", "value", "same", 1, "other", 2.0, "Count", "p", uint8(0))
-	f.Add("ns", "d", "v", "m", 1, "f", math.NaN(), "None", "p", uint8(0))
-	f.Add("ns", "d", "v", "m", 1, "f", math.Inf(-1), "None", "p", uint8(0))
-	f.Add("ns", "d", "v", "m", 1, "f", 1e300, "None", "p", uint8(0))
-	f.Add("ns", "d", "v", "_aws", 1, "f", 1.0, "None", "_aws", uint8(0))
-	f.Add(" ", ":d", "", "", 1, "\x00", 1.0, "Parsecs", "m", uint8(0))
-	f.Add("ns", "d", "v", "m", 1, "f", 1.0, "None", "p", uint8(98))
-	f.Add("ns", "d", "v", "m", 1, "f", 1.0, "None", "p", uint8(255))
+	f.Add("ns", "dimKey", "dimValue", "other", "intMetric", 1, "floatMetric", 1.5, "None", "prop", uint8(0))
+	f.Add("aws-embedded-metrics", "Service", "api", "other", "latency", 250, "size", 1024.0, "Milliseconds", "requestId", uint8(0))
+	f.Add("ns", "same", "value", "other", "same", 1, "other", 2.0, "Count", "p", uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", math.NaN(), "None", "p", uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", math.Inf(-1), "None", "p", uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1e300, "None", "p", uint8(0))
+	f.Add("ns", "d", "v", "other", "_aws", 1, "f", 1.0, "None", "_aws", uint8(0))
+	f.Add(" ", ":d", "", "", "", 1, "\x00", 1.0, "Parsecs", "m", uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(98))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(255))
+	f.Add("ns", "d", "v", "v", "m", 1, "f", 1.0, "None", "p", uint8(150))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150))
 
-	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, intName string, intValue int,
+	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, otherValue, intName string, intValue int,
 		floatName string, floatValue float64, unit, propKey string, extraMetrics uint8) {
 		var buf bytes.Buffer
 		var errs []error
@@ -178,6 +184,15 @@ func FuzzSpecCompliance(f *testing.F) {
 			values[i] = floatValue * float64(i)
 		}
 		ctx.PutValues(floatName, values, append(opts, emf.Unit(emf.MetricUnit(unit)))...)
+
+		// A context that may disagree with the others on the dimension
+		// value, so its metrics are written on separate lines. It shares a
+		// metric name with the others.
+		other := logger.NewContext().Namespace(namespace).Dimension(dimKey, otherValue)
+		for i := range int(extraMetrics) / 2 {
+			other.Metric(fmt.Sprintf("other%d", i), i)
+		}
+		other.PutValues(floatName, values, append(opts, emf.Unit(emf.MetricUnit(unit)))...)
 		logger.Log()
 
 		if buf.Len() == 0 {
@@ -490,5 +505,221 @@ func assertCompliant(t *testing.T, out []byte) {
 	t.Helper()
 	for _, v := range specViolations(out, time.Now()) {
 		t.Errorf("not spec compliant: %s\noutput: %s", v, out)
+	}
+}
+
+// loggedMetric is one metric in a directive of a log line.
+type loggedMetric struct {
+	line      int
+	namespace string
+	provider  any
+	value     any
+}
+
+// loggedMetrics checks every line is spec compliant, and returns each
+// logged metric by name, with the Provider dimension value on its line.
+func loggedMetrics(t *testing.T, out []byte) (map[string][]loggedMetric, int) {
+	t.Helper()
+	seen := map[string][]loggedMetric{}
+	lines := 0
+	for line := range bytes.Lines(out) {
+		lines++
+		assertCompliant(t, line)
+
+		var doc map[string]any
+		if err := json.Unmarshal(line, &doc); err != nil {
+			t.Fatal(err)
+		}
+		meta := doc["_aws"].(map[string]any)
+		for _, d := range meta["CloudWatchMetrics"].([]any) {
+			dir := d.(map[string]any)
+			for _, m := range dir["Metrics"].([]any) {
+				name := m.(map[string]any)["Name"].(string)
+				seen[name] = append(seen[name], loggedMetric{lines, dir["Namespace"].(string), doc["Provider"], doc[name]})
+			}
+		}
+	}
+	return seen, lines
+}
+
+// TestDisagreeingContextsSplit checks contexts that disagree on a dimension
+// value are written on separate lines, while still splitting more than 100
+// metrics, or more than 100 values, across lines.
+func TestDisagreeingContextsSplit(t *testing.T) {
+	t.Run("more than 100 metrics", func(t *testing.T) {
+		var buf bytes.Buffer
+		var errs []error
+		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+			errs = append(errs, err)
+		})).Namespace("a").Dimension("Provider", "card")
+		b := logger.NewContext().Namespace("b").Dimension("Provider", "paypal")
+		c := logger.NewContext().Namespace("c").Dimension("Provider", "card")
+		counts := map[string]int{"a": 150, "b": 60, "c": 30}
+		for i := range counts["a"] {
+			logger.Metric(fmt.Sprintf("a%d", i), i)
+		}
+		for i := range counts["b"] {
+			b.Metric(fmt.Sprintf("b%d", i), i)
+		}
+		for i := range counts["c"] {
+			c.Metric(fmt.Sprintf("c%d", i), i)
+		}
+		logger.Log()
+
+		if len(errs) > 0 {
+			t.Errorf("expected no errors, got %v", errs)
+		}
+		seen, lines := loggedMetrics(t, buf.Bytes())
+		// a and c share 180 metrics over 2 lines, then b has its own line.
+		if lines != 3 {
+			t.Errorf("expected 3 lines, got %d", lines)
+		}
+		providers := map[string]string{"a": "card", "b": "paypal", "c": "card"}
+		for ns, count := range counts {
+			for i := range count {
+				name := fmt.Sprintf("%s%d", ns, i)
+				got := seen[name]
+				if len(got) != 1 {
+					t.Fatalf("%s: logged %d times, want once", name, len(got))
+				}
+				if got[0].namespace != ns || got[0].provider != providers[ns] || got[0].value != float64(i) {
+					t.Errorf("%s: got %+v", name, got[0])
+				}
+				if onLastLine := got[0].line == 3; onLastLine != (ns == "b") {
+					t.Errorf("%s: on line %d", name, got[0].line)
+				}
+			}
+		}
+	})
+
+	t.Run("more than 100 values", func(t *testing.T) {
+		var buf bytes.Buffer
+		values := make([]float64, 250)
+		for i := range values {
+			values[i] = float64(i)
+		}
+		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions()).
+			Namespace("a").
+			Dimension("Provider", "card").
+			PutValues("Latency", values)
+		logger.NewContext().
+			Namespace("b").
+			Dimension("Provider", "paypal").
+			Metric("Refunds", 1).
+			Put("Latency", 1000)
+		logger.Log()
+
+		seen, lines := loggedMetrics(t, buf.Bytes())
+		// Each context writes Latency's 251 values over 3 rounds.
+		if lines != 6 {
+			t.Errorf("expected 6 lines, got %d", lines)
+		}
+		want := slices.Concat(values, []float64{1000})
+		for _, tc := range []struct{ namespace, provider string }{{"a", "card"}, {"b", "paypal"}} {
+			var got []float64
+			for _, m := range seen["Latency"] {
+				if m.namespace != tc.namespace {
+					continue
+				}
+				if m.provider != tc.provider {
+					t.Errorf("Latency in %s on line %d has Provider %v", tc.namespace, m.line, m.provider)
+				}
+				for _, v := range m.value.([]any) {
+					got = append(got, v.(float64))
+				}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("Latency in %s: got %d values %v, want %d", tc.namespace, len(got), got, len(want))
+			}
+		}
+		if r := seen["Refunds"]; len(r) != 1 || r[0].namespace != "b" || r[0].provider != "paypal" {
+			t.Errorf("Refunds: got %+v", r)
+		}
+	})
+}
+
+// TestDisagreeingContextsRandom builds random contexts that often disagree
+// on dimension values, and checks every line is spec compliant, every
+// directive's dimensions have its own context's values, and every metric is
+// written for each context that logged it.
+func TestDisagreeingContextsRandom(t *testing.T) {
+	type context struct {
+		dimension func(key, value string)
+		put       func(name string, value float64)
+		values    map[string]string
+		metrics   map[string]bool
+	}
+
+	for seed := range 500 {
+		r := rand.New(rand.NewPCG(uint64(seed), 0))
+		var buf bytes.Buffer
+		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions()).Namespace("c0")
+		contexts := []*context{{
+			dimension: func(k, v string) { logger.Dimension(k, v) },
+			put:       func(n string, v float64) { logger.Put(n, v) },
+		}}
+		for i := range 1 + r.IntN(4) {
+			c := logger.NewContext().Namespace(fmt.Sprintf("c%d", i+1))
+			contexts = append(contexts, &context{
+				dimension: func(k, v string) { c.Dimension(k, v) },
+				put:       func(n string, v float64) { c.Put(n, v) },
+			})
+		}
+		for _, c := range contexts {
+			c.values, c.metrics = map[string]string{}, map[string]bool{}
+		}
+
+		for range r.IntN(60) {
+			c := contexts[r.IntN(len(contexts))]
+			if r.IntN(3) == 0 {
+				key, value := fmt.Sprintf("d%d", r.IntN(3)), fmt.Sprintf("v%d", r.IntN(3))
+				c.dimension(key, value)
+				c.values[key] = value
+				continue
+			}
+			// Up to 130 names, some with more than 100 values, so lines
+			// are also split by metric count and by rounds of values.
+			name := fmt.Sprintf("m%d", r.IntN(130))
+			for range 1 + r.IntN(2)*r.IntN(120) {
+				c.put(name, 1)
+			}
+			c.metrics[name] = true
+		}
+		logger.Log()
+
+		logged := map[string]bool{} // namespace and metric name
+		for line := range bytes.Lines(buf.Bytes()) {
+			assertCompliant(t, line)
+			var doc map[string]any
+			if err := json.Unmarshal(line, &doc); err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range doc["_aws"].(map[string]any)["CloudWatchMetrics"].([]any) {
+				dir := d.(map[string]any)
+				namespace := dir["Namespace"].(string)
+				var i int
+				if _, err := fmt.Sscanf(namespace, "c%d", &i); err != nil {
+					t.Fatal(err)
+				}
+				for _, set := range dir["Dimensions"].([]any) {
+					for _, k := range set.([]any) {
+						key := k.(string)
+						if want := contexts[i].values[key]; doc[key] != want {
+							t.Fatalf("seed %d: %s has %s=%v on its line, want %s\n%s", seed, namespace, key, doc[key], want, buf.Bytes())
+						}
+					}
+				}
+				for _, m := range dir["Metrics"].([]any) {
+					logged[namespace+"/"+m.(map[string]any)["Name"].(string)] = true
+				}
+			}
+		}
+		for i, c := range contexts {
+			for name := range c.metrics {
+				if !logged[fmt.Sprintf("c%d/%s", i, name)] {
+					t.Fatalf("seed %d: metric %s of c%d not logged\n%s", seed, name, i, buf.Bytes())
+				}
+			}
+		}
 	}
 }
