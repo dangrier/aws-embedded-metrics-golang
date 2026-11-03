@@ -119,6 +119,23 @@ func ExampleLogger_Property() {
 	// {"Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"aws-embedded-metrics","Dimensions":[[]],"Metrics":[{"Name":"Requests","Unit":"None"}]}]},"requestId":"989ffbf8-9ace-4817-a57c-e4dd734019ee"}
 }
 
+// PropertyValue logs numbers, bools, lists and objects as JSON, so CloudWatch
+// Logs Insights can compare them, as in filter statusCode >= 500.
+func ExampleLogger_PropertyValue() {
+	emf.New(exampleTime).
+		PropertyValue("statusCode", 503).
+		PropertyValue("cached", false).
+		PropertyValue("tags", []string{"beta", "eu"}).
+		PropertyValue("client", struct {
+			Name    string `json:"name"`
+			Version int    `json:"version"`
+		}{"ios", 42}).
+		Metric("Requests", 1).
+		Log()
+	// Output:
+	// {"Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"aws-embedded-metrics","Dimensions":[[]],"Metrics":[{"Name":"Requests","Unit":"None"}]}]},"cached":false,"client":{"name":"ios","version":42},"statusCode":503,"tags":["beta","eu"]}
+}
+
 // The error handler hears about input the logger skips because it would
 // break the EMF spec. The rest is still logged.
 func ExampleWithErrorHandler() {

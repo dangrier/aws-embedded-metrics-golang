@@ -374,6 +374,45 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/31.json",
 	},
+	{
+		name: "property values of each JSON type",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			type user struct {
+				ID     int    `json:"id"`
+				Name   string `json:"name,omitempty"`
+				Email  string `json:"email,omitempty"`
+				Secret string `json:"-"`
+			}
+			logger.PropertyValue("statusCode", 503).
+				PropertyValue("ratio", 0.25).
+				PropertyValue("big", int64(1)<<53).
+				PropertyValue("cached", true).
+				PropertyValue("missing", nil).
+				PropertyValue("requestId", "abc").
+				PropertyValue("tags", []string{"beta", "eu"}).
+				PropertyValue("empty", []int{}).
+				PropertyValue("headers", map[string]any{"accept": "json", "retries": 2}).
+				PropertyValue("user", user{ID: 7, Name: "ana", Secret: "hidden"}).
+				Metric("Requests", 1)
+		},
+		expected: "testdata/32.json",
+	},
+	{
+		name: "Property and PropertyValue replace each other",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Property("a", "string").PropertyValue("a", 1)
+			logger.PropertyValue("b", 2).Property("b", "string")
+			logger.PropertyValue("c", []int{1}).PropertyValue("c", map[string]int{"n": 3})
+			logger.Metric("Requests", 1)
+		},
+		expected: "testdata/33.json",
+	},
 }
 
 // run sets up the environment, logs and returns the output.

@@ -126,8 +126,33 @@ searching in CloudWatch Logs Insights.
 logger.Property("requestId", requestID)
 ```
 
+`Property` takes a string. For numbers, booleans, lists, maps and structs, use `PropertyValue`,
+which writes the value as JSON:
+
+```go
+logger.
+	PropertyValue("statusCode", 503).
+	PropertyValue("cached", false).
+	PropertyValue("tags", []string{"beta", "eu"})
+```
+
+Numbers matter because Logs Insights can only compare a field as a number if it was logged as one.
+With `"statusCode":503`, this query finds the server errors, but with `"statusCode":"503"` it
+doesn't:
+
+```
+fields @timestamp, requestId, statusCode
+| filter statusCode >= 500
+```
+
+The value is encoded with `encoding/json` when `PropertyValue` is called, so struct `json` tags
+apply, and changing a map or slice afterwards doesn't change what is logged. `nil` is written as
+`null`. A value that can't be encoded, such as a channel, a func, `NaN`, or a `json.Marshaler` that
+fails, is skipped and reported to the error handler with an error that wraps `emf.ErrInvalid`.
+Setting a key again replaces its value, whether it was set with `Property` or `PropertyValue`.
+
 A property shares the log line with dimensions and metrics, so each key can only hold one of them.
-A property with the key of a metric or dimension is skipped and reported. A dimension or metric
+This applies to properties set with `Property` and `PropertyValue` alike. A property with the key of a metric or dimension is skipped and reported. A dimension or metric
 added later with a property's key is kept, and replaces the property, which is reported too. A
 dimension replaces it on every line, and a metric on the lines the metric is written on. The Lambda
 properties the library adds (see [Lambda defaults](#lambda-defaults)) can be replaced without a
@@ -212,7 +237,8 @@ added as a `traceId` property.
 
 Output always follows the [EMF specification](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html).
 Input that would break it is skipped, and the rest is still logged. This includes NaN or infinite
-values, invalid names, unknown units, and a name used for both a metric and a dimension.
+values, invalid names, unknown units, a name used for both a metric and a dimension, and a property
+value that can't be encoded as JSON.
 
 Some input is reported, but still written:
 

@@ -152,6 +152,8 @@ func FuzzSpecCompliance(f *testing.F) {
 	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(255))
 	f.Add("ns", "d", "v", "v", "m", 1, "f", 1.0, "None", "p", uint8(150))
 	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(1))
+	f.Add("ns", "d", "v", "d", "m", 1, "f", math.NaN(), "None", "d", uint8(5))
 
 	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, otherValue, intName string, intValue int,
 		floatName string, floatValue float64, unit, propKey string, extraMetrics uint8) {
@@ -161,15 +163,20 @@ func FuzzSpecCompliance(f *testing.F) {
 			errs = append(errs, err)
 		}))
 		// The property is set first and last, so dimensions and metrics with
-		// its key replace it, and it can't replace them.
+		// its key replace it, and it can't replace them. Property and
+		// PropertyValue replace each other, and the other value's key may
+		// clash with a dimension or metric too.
 		logger.
 			Property(propKey, "first").
+			PropertyValue(otherValue, fuzzPropertyValue(extraMetrics, intValue, floatValue, dimValue)).
+			PropertyValue(propKey, fuzzPropertyValue(extraMetrics+1, intValue, floatValue, dimValue)).
 			Namespace(namespace).
 			Dimension(dimKey, dimValue).
 			DimensionSet(emf.NewDimension(dimKey, dimValue), emf.NewDimension(dimKey, dimValue)).
 			MetricAs(intName, intValue, emf.MetricUnit(unit)).
 			MetricFloatAs(floatName, floatValue, emf.MetricUnit(unit)).
-			Property(propKey, "value")
+			Property(propKey, "value").
+			PropertyValue(propKey, fuzzPropertyValue(extraMetrics+2, intValue, floatValue, dimValue))
 		ctx := logger.NewContext().Dimension(dimKey, dimValue)
 		for i := range int(extraMetrics) {
 			ctx.Metric(fmt.Sprintf("extra%d", i), i)
@@ -216,6 +223,26 @@ func FuzzSpecCompliance(f *testing.F) {
 	})
 }
 
+// fuzzPropertyValue returns a property value of a type picked by kind,
+// made from the fuzzer's input. A float may be NaN or infinite, which
+// PropertyValue skips and reports.
+func fuzzPropertyValue(kind uint8, i int, f float64, s string) any {
+	switch kind % 6 {
+	case 0:
+		return i
+	case 1:
+		return f
+	case 2:
+		return kind%4 == 2
+	case 3:
+		return nil
+	case 4:
+		return []any{s, i, f}
+	default:
+		return map[string]any{s: map[string]any{"n": i, "f": f}}
+	}
+}
+
 // TestErrorHandler checks each kind of invalid input is skipped and
 // reported, while valid metrics on the same logger are still written.
 func TestErrorHandler(t *testing.T) {
@@ -247,6 +274,17 @@ func TestErrorHandler(t *testing.T) {
 		"blank namespace":         func(l *emf.Logger) { l.Namespace(" ") },
 		"property named a metric": func(l *emf.Logger) { l.Metric("dup", 1).Property("dup", "v") },
 		"reserved property":       func(l *emf.Logger) { l.Property("_aws", "v") },
+		"property value named a metric": func(l *emf.Logger) {
+			l.Metric("dup", 1).PropertyValue("dup", 2)
+		},
+		"property value named a dimension": func(l *emf.Logger) {
+			l.Dimension("dup", "v").PropertyValue("dup", 2)
+		},
+		"property value named a context dimension": func(l *emf.Logger) {
+			l.NewContext().Dimension("dup", "v")
+			l.PropertyValue("dup", 2)
+		},
+		"reserved property value": func(l *emf.Logger) { l.PropertyValue("_aws", map[string]int{"Timestamp": 1}) },
 		"context NaN value":       func(l *emf.Logger) { l.NewContext().MetricFloat("bad", math.NaN()).Metric("ctx", 1) },
 	}
 
@@ -359,6 +397,39 @@ func TestPropertyReplaced(t *testing.T) {
 			},
 			reported: 1,
 			want:     []string{`"dup":[1,2,3]`},
+		},
+		{
+			name:     "dimension replaces PropertyValue",
+			given:    func(l *emf.Logger) { l.PropertyValue("dup", 503).Dimension("dup", "v") },
+			reported: 1,
+			want:     []string{`"dup":"v"`},
+		},
+		{
+			name: "context dimension replaces PropertyValue",
+			given: func(l *emf.Logger) {
+				l.PropertyValue("dup", []int{1, 2})
+				l.NewContext().Dimension("dup", "v").Metric("ctx", 1)
+			},
+			reported: 1,
+			want:     []string{`"dup":"v"`},
+		},
+		{
+			name:     "metric replaces PropertyValue",
+			given:    func(l *emf.Logger) { l.PropertyValue("dup", true).Metric("dup", 7) },
+			reported: 1,
+			want:     []string{`"dup":7`},
+		},
+		{
+			name:     "dimension replaces PropertyValue that replaced Property",
+			given:    func(l *emf.Logger) { l.Property("dup", "p").PropertyValue("dup", 1).Dimension("dup", "v") },
+			reported: 1,
+			want:     []string{`"dup":"v"`},
+		},
+		{
+			name:     "skipped PropertyValue keeps the earlier value",
+			given:    func(l *emf.Logger) { l.PropertyValue("dup", 1).PropertyValue("dup", math.NaN()) },
+			reported: 1, // only that the value can't be encoded
+			want:     []string{`"dup":1`},
 		},
 		{
 			name: "skipped dimension set",
@@ -551,6 +622,24 @@ func TestEventSizeLimit(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("PropertyValue over 1 MB", func(t *testing.T) {
+		var buf bytes.Buffer
+		var errs []error
+		emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+			errs = append(errs, err)
+		})).
+			PropertyValue("big", make([]int, 1<<20)). // "0," a million times
+			Metric("m", 1).
+			Log()
+
+		if buf.Len() < 2<<20 {
+			t.Errorf("expected the line to be written, got %d bytes", buf.Len())
+		}
+		if len(errs) != 1 || !errors.Is(errs[0], emf.ErrInvalid) {
+			t.Errorf("expected 1 ErrInvalid error, got %v", errs)
+		}
+	})
 }
 
 type failingWriter struct{}

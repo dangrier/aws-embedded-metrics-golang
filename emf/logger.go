@@ -21,7 +21,7 @@ type Logger struct {
 	defaultContext    Context
 	contexts          []*Context
 	defaultProperties map[string]any // the Lambda properties and traceId, set by New
-	properties        map[string]any // set with Property
+	properties        map[string]any // set with Property (a string) or PropertyValue (a json.RawMessage)
 	withoutDimensions bool
 	logGroupName      string
 	onError           func(error)
@@ -77,7 +77,7 @@ func WithLogGroup(logGroup string) LoggerOption {
 }
 
 // WithErrorHandler sets a function that is called when the logger skips
-// input that would break the EMF spec, when a dimension or metric replaces a
+// input that would break the EMF spec or can't be encoded as JSON, when a dimension or metric replaces a
 // property with the same key, or when it fails to write. Errors about input
 // wrap ErrInvalid. Without a handler, these errors are ignored.
 // The handler may use the logger. If the logger is used from several
@@ -150,16 +150,49 @@ func (l *Logger) Namespace(namespace string) *Logger {
 // dimension, so it is skipped and reported. A dimension or metric added
 // later with the same key is kept and replaces the property, and that is
 // reported too.
+// Setting a key again replaces the value, whether it was set with Property
+// or PropertyValue.
 func (l *Logger) Property(key, value string) *Logger {
+	l.registry.do(func() { l.setProperty(key, value) })
+	return l
+}
+
+// PropertyValue sets a property to any value that can be encoded as JSON,
+// such as a number, a bool, a slice, a map or a struct. Numbers stay numbers
+// in the log line, so CloudWatch Logs Insights can compare them, as in
+// filter statusCode >= 500. A nil value is written as JSON null.
+//
+// The value is encoded with encoding/json when PropertyValue is called, so
+// changing a map or slice afterwards doesn't change what is logged. A value
+// that can't be encoded, such as a channel, a func, NaN, or a json.Marshaler
+// that fails, is skipped and reported with an error that wraps ErrInvalid
+// and the error from encoding/json.
+//
+// The key is checked the same way as for Property, and setting a key again
+// replaces the value, whether it was set with Property or PropertyValue.
+func (l *Logger) PropertyValue(key string, value any) *Logger {
+	// Encode outside the lock, so a json.Marshaler may use the logger.
+	encoded, err := json.Marshal(value)
 	l.registry.do(func() {
-		if l.registry.checkProperty(key) {
-			if l.properties == nil {
-				l.properties = make(map[string]any)
-			}
-			l.properties[key] = value
+		if err != nil {
+			l.registry.report(fmt.Errorf("%w: skipped property %q: value can't be encoded as JSON: %w", ErrInvalid, key, err))
+			return
 		}
+		l.setProperty(key, json.RawMessage(encoded))
 	})
 	return l
+}
+
+// setProperty sets a property set with Property or PropertyValue, if the
+// key is allowed. It must be called while holding the registry lock.
+func (l *Logger) setProperty(key string, value any) {
+	if !l.registry.checkProperty(key) {
+		return
+	}
+	if l.properties == nil {
+		l.properties = make(map[string]any)
+	}
+	l.properties[key] = value
 }
 
 // setDefaultProperty sets one of the properties New adds. A dimension or
