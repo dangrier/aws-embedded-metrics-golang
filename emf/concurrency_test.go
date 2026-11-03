@@ -51,6 +51,7 @@ func TestConcurrentUse(t *testing.T) {
 					MetricFloat(name+"_f", float64(i)).
 					Metrics(map[string]int{name + "_map": i}).
 					Property(fmt.Sprintf("g%d_p%d", g, i), "x").
+					PropertyValue(fmt.Sprintf("g%d_pv%d", g, i), map[string]int{"i": i}).
 					Dimension(fmt.Sprintf("g%d_d%d", g, i), "v")
 				ctx.Metric(name+"_ctx", i).Dimension(fmt.Sprintf("g%d_cd%d", g, i), "v")
 				logger.MetricFloat(name+"_bad", math.NaN()) // reported, not logged

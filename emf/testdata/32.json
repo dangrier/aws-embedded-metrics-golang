@@ -1,0 +1,34 @@
+{
+  "_aws": {
+    "Timestamp": "<<PRESENCE>>",
+    "CloudWatchMetrics": [
+      {
+        "Namespace": "aws-embedded-metrics",
+        "Dimensions": [[]],
+        "Metrics": [
+          {
+            "Name": "Requests",
+            "Unit": "None"
+          }
+        ]
+      }
+    ]
+  },
+  "Requests": 1,
+  "statusCode": 503,
+  "ratio": 0.25,
+  "big": 9007199254740992,
+  "cached": true,
+  "missing": null,
+  "requestId": "abc",
+  "tags": ["beta", "eu"],
+  "empty": [],
+  "headers": {
+    "accept": "json",
+    "retries": 2
+  },
+  "user": {
+    "id": 7,
+    "name": "ana"
+  }
+}
