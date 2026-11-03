@@ -37,7 +37,11 @@ type Context struct {
 	metricDirective MetricDirective  // its Dimensions are only the sets added to the context
 	dimensions      []dimensionValue // only the values added to the context
 	defaults        *defaultDimensions
-	registry        *registry
+	// written are the sets to write when the context has sets of its own
+	// and defaults: its sets combined with the default set. They are kept
+	// as each set is added, so Log doesn't build them again.
+	written  []DimensionSet
+	registry *registry
 }
 
 // defaultDimensions are the Lambda default dimensions, shared by every
@@ -766,6 +770,38 @@ func (c *Context) dimensionSet(dimensions []Dimension) {
 		}
 	}
 	c.metricDirective.Dimensions = append(c.metricDirective.Dimensions, set)
+	c.addWritten(set)
+}
+
+// addWritten combines a set newly added to c with the defaults, and adds
+// the result to the sets to write, unless it is already there. Without
+// merging, the default set comes first, and a set with the default keys
+// isn't added again. With merging, the default keys are added to the set.
+// Like the sets added to c, written is only ever appended to, so a snapshot
+// of it stays valid.
+func (c *Context) addWritten(set DimensionSet) {
+	defaults := c.defaults
+	if defaults == nil {
+		return
+	}
+	if c.written == nil {
+		// Most contexts have only a few sets, so this is usually the only
+		// allocation.
+		c.written = make([]DimensionSet, 0, 4)
+	}
+	if !defaults.merge {
+		if len(c.written) == 0 {
+			c.written = append(c.written, defaults.set)
+		}
+		if !sameKeys(set, defaults.set) {
+			c.written = append(c.written, set)
+		}
+		return
+	}
+	merged := mergeKeys(defaults.set, set)
+	if !slices.ContainsFunc(c.written, func(s DimensionSet) bool { return sameKeys(s, merged) }) {
+		c.written = append(c.written, merged)
+	}
 }
 
 // mergedDefaults returns the default set if it is merged into each of c's
@@ -790,33 +826,16 @@ func (c *Context) directive() MetricDirective {
 // are the default set. If the defaults are merged, the default keys are added
 // to each of c's sets, and sets that end up with the same keys are written
 // once. If not, the default set comes first, followed by c's sets other than
-// one with the default keys.
+// one with the default keys. Those are kept in c.written as each set is
+// added.
 func (c *Context) dimensionSets() []DimensionSet {
-	own := c.metricDirective.Dimensions
-	defaults := c.defaults
 	switch {
-	case defaults == nil:
-		return own
-	case len(own) == 0:
-		return defaults.sets
-	case !defaults.merge:
-		sets := make([]DimensionSet, 0, 1+len(own))
-		sets = append(sets, defaults.set)
-		for _, set := range own {
-			if !sameKeys(set, defaults.set) {
-				sets = append(sets, set)
-			}
-		}
-		return sets
+	case c.defaults == nil:
+		return c.metricDirective.Dimensions
+	case len(c.metricDirective.Dimensions) == 0:
+		return c.defaults.sets
 	}
-	sets := make([]DimensionSet, 0, len(own))
-	for _, set := range own {
-		merged := mergeKeys(defaults.set, set)
-		if !slices.ContainsFunc(sets, func(s DimensionSet) bool { return sameKeys(s, merged) }) {
-			sets = append(sets, merged)
-		}
-	}
-	return sets
+	return c.written
 }
 
 // mergeKeys returns the keys of defaults, followed by the keys of set that
