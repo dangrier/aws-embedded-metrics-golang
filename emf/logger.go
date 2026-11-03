@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,18 +44,35 @@ type Context struct {
 // context of a logger. They are kept apart from the dimensions added to a
 // context, and only combined with them when a line is built. A value added
 // to a context with a default key replaces the default value in that
-// context.
+// context. They are never changed after they are made, so loggers can share
+// them too.
 type defaultDimensions struct {
+	fnName string
 	set    DimensionSet
 	values []dimensionValue
 	merge  bool           // set by WithMergedDefaultDimensions
 	sets   []DimensionSet // {set}, written for a context with no sets of its own
 }
 
+// defaultDimensionsCache holds the last defaults made, without and with
+// merging, so a new logger for each Lambda invocation doesn't make them
+// again.
+var defaultDimensionsCache [2]atomic.Pointer[defaultDimensions]
+
+// newDefaultDimensions returns the defaults for a Lambda function. They are
+// read only, and may be shared with other loggers.
 func newDefaultDimensions(fnName string, merge bool) *defaultDimensions {
+	cache := &defaultDimensionsCache[0]
+	if merge {
+		cache = &defaultDimensionsCache[1]
+	}
+	if d := cache.Load(); d != nil && d.fnName == fnName {
+		return d
+	}
 	set := DimensionSet{"ServiceName", "ServiceType"}
-	return &defaultDimensions{
-		set: set,
+	d := &defaultDimensions{
+		fnName: fnName,
+		set:    set,
 		values: []dimensionValue{
 			{"ServiceType", "AWS::Lambda::Function"},
 			{"ServiceName", fnName},
@@ -62,6 +80,8 @@ func newDefaultDimensions(fnName string, merge bool) *defaultDimensions {
 		merge: merge,
 		sets:  []DimensionSet{set},
 	}
+	cache.Store(d)
+	return d
 }
 
 // dimensionValue is a context's value for a dimension key. The value is
@@ -138,7 +158,9 @@ func WithErrorHandler(fn func(error)) LoggerOption {
 // - Prints to os.Stdout.
 // - Context based on Lambda environment variables.
 // - Timestamp set to the time when New was called.
-// Specify LoggerOptions to customize the logger.
+// Specify LoggerOptions to customize the logger. The Lambda environment
+// variables are read once, by New, and contexts made later with NewContext
+// use the same values.
 func New(opts ...LoggerOption) *Logger {
 	l := Logger{
 		out:       os.Stdout,

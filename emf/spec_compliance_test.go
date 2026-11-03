@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -62,6 +63,9 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 		"dimension target number":  aws(`{"Namespace":"ns","Dimensions":[["m"]],"Metrics":[{"Name":"m"}]}`),
 		"extra directive member":   aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}],"Extra":1}`),
 		"bad storage resolution":   aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m","StorageResolution":5}]}`),
+		"repeated dimension key":   aws(`{"Namespace":"ns","Dimensions":[["d","d"]],"Metrics":[{"Name":"m"}]}`),
+		"repeated dimension set":   `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[{"Namespace":"ns","Dimensions":[["d","e"],["e","d"]],"Metrics":[{"Name":"m"}]}]},"d":"v","e":"v","m":1}`,
+		"repeated empty set":       aws(`{"Namespace":"ns","Dimensions":[[],[]],"Metrics":[{"Name":"m"}]}`),
 		"missing _aws":             `{"m":1}`,
 		"trailing data":            aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}`) + `{}`,
 		"empty line":               "\n",
@@ -69,8 +73,7 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1e200}`,
 		"timestamp too old": `{"_aws":{"Timestamp":1,"CloudWatchMetrics":[` +
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1}`,
-		"31 dimensions": aws(`{"Namespace":"ns","Dimensions":[[` +
-			strings.TrimSuffix(strings.Repeat(`"d",`, 31), ",") + `]],"Metrics":[{"Name":"m"}]}`),
+		"31 dimensions": thirtyOneDimensions(),
 		"101 metric definitions": aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[` +
 			strings.TrimSuffix(strings.Repeat(`{"Name":"m"},`, 101), ",") + `]}`),
 	}
@@ -82,6 +85,19 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 			}
 		})
 	}
+}
+
+// thirtyOneDimensions returns a document whose only violation is a dimension
+// set with 31 different keys.
+func thirtyOneDimensions() string {
+	keys := make([]string, 31)
+	values := make([]string, 31)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(`"d%d"`, i)
+		values[i] = fmt.Sprintf(`"d%d":"v"`, i)
+	}
+	return `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[{"Namespace":"ns","Dimensions":[[` +
+		strings.Join(keys, ",") + `]],"Metrics":[{"Name":"m"}]}]},` + strings.Join(values, ",") + `,"m":1}`
 }
 
 // TestSpecCompliance checks the output of every TestEmf case against the
@@ -1158,6 +1174,55 @@ func TestMergedDefaultsAreDimensions(t *testing.T) {
 			assertCompliant(t, buf.Bytes())
 			if !bytes.Contains(buf.Bytes(), []byte(`"ServiceType":"AWS::Lambda::Function"`)) {
 				t.Errorf("default dimension missing from output: %s", buf.Bytes())
+			}
+		})
+	}
+}
+
+// TestLambdaEnvReadByNew checks the Lambda environment is read once, by New.
+// Contexts made later use the same defaults, even if the environment changed
+// in between, so their dimensions agree with the logger's properties.
+func TestLambdaEnvReadByNew(t *testing.T) {
+	opts := map[string][]emf.LoggerOption{
+		"separate set": nil,
+		"merged":       {emf.WithMergedDefaultDimensions()},
+	}
+	for name, opt := range opts {
+		t.Run(name+", set after New", func(t *testing.T) {
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+			var buf bytes.Buffer
+			logger := emf.New(append([]emf.LoggerOption{emf.WithWriter(&buf)}, opt...)...)
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "late")
+			logger.NewContext().Namespace("c").Metric("m", 1)
+			logger.Log()
+
+			assertCompliant(t, buf.Bytes())
+			if bytes.Contains(buf.Bytes(), []byte("ServiceName")) {
+				t.Errorf("context made after New has Lambda defaults: %s", buf.Bytes())
+			}
+		})
+		t.Run(name+", unset after New", func(t *testing.T) {
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+			var buf bytes.Buffer
+			logger := emf.New(append([]emf.LoggerOption{emf.WithWriter(&buf)}, opt...)...)
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+			logger.NewContext().Namespace("c").Metric("m", 1)
+			logger.Log()
+
+			assertCompliant(t, buf.Bytes())
+			var doc struct {
+				ServiceName string
+				AWS         struct {
+					CloudWatchMetrics []emf.MetricDirective
+				} `json:"_aws"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+				t.Fatal(err)
+			}
+			want := []emf.DimensionSet{{"ServiceName", "ServiceType"}}
+			if doc.ServiceName != "fn" || len(doc.AWS.CloudWatchMetrics) != 1 ||
+				!reflect.DeepEqual(doc.AWS.CloudWatchMetrics[0].Dimensions, want) {
+				t.Errorf("context made after New doesn't have the defaults New read: %s", buf.Bytes())
 			}
 		})
 	}

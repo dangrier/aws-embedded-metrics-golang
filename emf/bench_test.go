@@ -129,3 +129,59 @@ func BenchmarkLogContexts(b *testing.B) {
 		}
 	}
 }
+
+// lambdaModes are the ways a logger in Lambda writes the default
+// dimensions: as a set of their own, or merged into each set.
+var lambdaModes = []struct {
+	name string
+	opts []emf.LoggerOption
+}{
+	{"separate", nil},
+	{"merged", []emf.LoggerOption{emf.WithMergedDefaultDimensions()}},
+}
+
+// BenchmarkLambdaEvent builds and logs a typical event in Lambda, with the
+// default dimensions and properties, and a new logger for each invocation.
+func BenchmarkLambdaEvent(b *testing.B) {
+	b.Setenv("AWS_LAMBDA_FUNCTION_NAME", "checkout-fn")
+	b.Setenv("AWS_EXECUTION_ENV", "AWS_Lambda_provided.al2023")
+	b.Setenv("AWS_LAMBDA_FUNCTION_MEMORY_SIZE", "128")
+	b.Setenv("AWS_LAMBDA_FUNCTION_VERSION", "$LATEST")
+	b.Setenv("AWS_LAMBDA_LOG_STREAM_NAME", "2026/11/03/[$LATEST]abc123")
+	for _, mode := range lambdaModes {
+		b.Run(mode.name, func(b *testing.B) {
+			opts := append([]emf.LoggerOption{emf.WithWriter(io.Discard)}, mode.opts...)
+			b.ReportAllocs()
+			for b.Loop() {
+				emf.New(opts...).
+					Namespace("app").
+					Dimension("Service", "api").
+					Dimension("Operation", "GetItem").
+					Property("requestId", "989ffbf8-9ace-4817-a57c-e4dd734019ee").
+					Metric("Requests", 1).
+					MetricFloatAs("Latency", 12.5, emf.Milliseconds).
+					Log()
+			}
+		})
+	}
+}
+
+// BenchmarkLambdaContexts measures Log in Lambda with several contexts,
+// each with its own dimension set, so the default dimensions are combined
+// with the sets of each context.
+func BenchmarkLambdaContexts(b *testing.B) {
+	b.Setenv("AWS_LAMBDA_FUNCTION_NAME", "checkout-fn")
+	for _, mode := range lambdaModes {
+		b.Run(mode.name, func(b *testing.B) {
+			logger := emf.New(append([]emf.LoggerOption{emf.WithWriter(io.Discard)}, mode.opts...)...)
+			for i := range 10 {
+				logger.NewContext().Dimension("Worker", "all").Metric(fmt.Sprintf("m%d", i), i)
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				logger.Log()
+			}
+		})
+	}
+}

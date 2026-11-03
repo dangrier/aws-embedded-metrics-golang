@@ -171,8 +171,15 @@ func ExampleWithMergedDefaultDimensions() {
 		"AWS_LAMBDA_LOG_STREAM_NAME":      "2026/11/03/[$LATEST]abc123",
 	}
 	for k, v := range lambdaEnv {
+		old, wasSet := os.LookupEnv(k)
 		_ = os.Setenv(k, v)
-		defer func() { _ = os.Unsetenv(k) }()
+		defer func() {
+			if wasSet {
+				_ = os.Setenv(k, old)
+			} else {
+				_ = os.Unsetenv(k)
+			}
+		}()
 	}
 
 	emf.New(exampleTime, emf.WithMergedDefaultDimensions()).

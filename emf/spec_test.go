@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"os"
 	"slices"
@@ -111,12 +112,27 @@ func specViolations(line []byte, now time.Time) []string {
 		checkMembers(add, path, dir, "Namespace", "Dimensions", "Metrics")
 
 		sets, _ := dir["Dimensions"].([]any)
-		for _, s := range sets {
+		// The spec doesn't forbid a repeated key in a set, or a repeated set,
+		// but this library never writes either: a repeated set publishes
+		// each metric again for the same dimensions.
+		seenSets := make(map[string]bool, len(sets))
+		for j, s := range sets {
 			keys, _ := s.([]any)
+			seenKeys := make(map[string]bool, len(keys))
 			for _, k := range keys {
 				if key, ok := k.(string); ok {
 					checkDimensionTarget(add, root, key)
+					if seenKeys[key] {
+						add("%s.Dimensions[%d] has key %q more than once", path, j, key)
+					}
+					seenKeys[key] = true
 				}
+			}
+			id := slices.Sorted(maps.Keys(seenKeys))
+			if sameSet := strings.Join(id, "\x00"); seenSets[sameSet] {
+				add("%s.Dimensions[%d] repeats an earlier set with the keys %q", path, j, id)
+			} else {
+				seenSets[sameSet] = true
 			}
 		}
 

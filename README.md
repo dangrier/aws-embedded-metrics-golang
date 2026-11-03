@@ -234,7 +234,8 @@ When `AWS_LAMBDA_FUNCTION_NAME` is set, each logger adds:
 - `executionEnvironment`, `memorySize`, `functionVersion` and `logStreamId` properties
 
 Use `WithoutDimensions()` to leave these out. If X-Ray sampled the request, the trace ID is also
-added as a `traceId` property.
+added as a `traceId` property. The environment is read once, by `New`, and contexts made later with
+`NewContext` use the same values.
 
 By default, `ServiceName` and `ServiceType` are written as a set of their own, alongside yours. So
 once you add a dimension, each metric is published twice: once per function, and once for your
@@ -255,12 +256,12 @@ emf.New(emf.WithMergedDefaultDimensions()).Dimension("Service", "checkout").Metr
 "Dimensions":[["ServiceName","ServiceType","Service"]]
 ```
 
-Each metric is then published once per set of yours, which is one fewer custom metric per name, so
-it costs less. A context with no sets of its own still gets `["ServiceName","ServiceType"]`. If
+Each metric is no longer published for the default set on its own, which usually saves one custom
+metric per name. A context with no sets of its own still gets `["ServiceName","ServiceType"]`. If
 merging makes two sets the same, such as a set you added with `ServiceName` in it, the set is
-written once. The 30-key limit of a set counts the default keys it doesn't already have, so a set
-can have at most 28 keys of your own, and a set with more is skipped and reported. The option does
-nothing outside Lambda, or with `WithoutDimensions()`.
+written once. The 30-key limit counts the merged set, so a set can have at most 28 keys besides
+`ServiceName` and `ServiceType`. A set with more is skipped and reported. The option does nothing
+outside Lambda, or with `WithoutDimensions()`.
 
 Turning it on for existing code moves each Lambda metric to the combined series. The old series stop
 getting data, so update any dashboards and alarms that use them.
