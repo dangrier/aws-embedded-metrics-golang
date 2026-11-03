@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"time"
 
 	"github.com/dangrier/aws-embedded-metrics-golang/emf"
@@ -154,4 +155,31 @@ func ExampleWithErrorHandler() {
 		Log()
 	// Output:
 	// emf: invalid input: skipped metric "Ratio": value NaN must be a finite number between -2^360 and 2^360
+}
+
+// In Lambda, the default dimensions ServiceName and ServiceType are merged
+// into each of your dimension sets, so each metric is published once, for
+// the combination, instead of once for the default set and once for yours.
+func ExampleWithMergedDefaultDimensions() {
+	// Lambda sets these for you. They're set here to show the output in
+	// Lambda.
+	lambdaEnv := map[string]string{
+		"AWS_LAMBDA_FUNCTION_NAME":        "checkout-fn",
+		"AWS_EXECUTION_ENV":               "AWS_Lambda_provided.al2023",
+		"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
+		"AWS_LAMBDA_FUNCTION_VERSION":     "$LATEST",
+		"AWS_LAMBDA_LOG_STREAM_NAME":      "2026/11/03/[$LATEST]abc123",
+	}
+	for k, v := range lambdaEnv {
+		_ = os.Setenv(k, v)
+		defer func() { _ = os.Unsetenv(k) }()
+	}
+
+	emf.New(exampleTime, emf.WithMergedDefaultDimensions()).
+		Namespace("shop").
+		Dimension("Service", "checkout").
+		MetricAs("Orders", 1, emf.Count).
+		Log()
+	// Output:
+	// {"Orders":1,"Service":"checkout","ServiceName":"checkout-fn","ServiceType":"AWS::Lambda::Function","_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"shop","Dimensions":[["ServiceName","ServiceType","Service"]],"Metrics":[{"Name":"Orders","Unit":"Count"}]}]},"executionEnvironment":"AWS_Lambda_provided.al2023","functionVersion":"$LATEST","logStreamId":"2026/11/03/[$LATEST]abc123","memorySize":"128"}
 }

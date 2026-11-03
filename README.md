@@ -218,6 +218,7 @@ emf.New(
 	emf.WithWriter(os.Stderr),                     // write somewhere other than stdout
 	emf.WithTimestamp(time.Now().Add(-time.Hour)), // record metrics for another time
 	emf.WithoutDimensions(),                       // leave out the Lambda dimensions and properties
+	emf.WithMergedDefaultDimensions(),             // add the Lambda dimensions to each of your sets
 	emf.WithLogGroup("my-logs"),                   // log group for the CloudWatch agent
 	emf.WithErrorHandler(func(err error) {         // hear about skipped input and write errors
 		log.Println(err)
@@ -234,6 +235,35 @@ When `AWS_LAMBDA_FUNCTION_NAME` is set, each logger adds:
 
 Use `WithoutDimensions()` to leave these out. If X-Ray sampled the request, the trace ID is also
 added as a `traceId` property.
+
+By default, `ServiceName` and `ServiceType` are written as a set of their own, alongside yours. So
+once you add a dimension, each metric is published twice: once per function, and once for your
+dimension across all functions.
+
+```json
+"Dimensions":[["ServiceName","ServiceType"],["Service"]]
+```
+
+`WithMergedDefaultDimensions()` adds them to each of your sets instead, as the official AWS
+libraries do:
+
+```go
+emf.New(emf.WithMergedDefaultDimensions()).Dimension("Service", "checkout").Metric("Orders", 1).Log()
+```
+
+```json
+"Dimensions":[["ServiceName","ServiceType","Service"]]
+```
+
+Each metric is then published once per set of yours, which is one fewer custom metric per name, so
+it costs less. A context with no sets of its own still gets `["ServiceName","ServiceType"]`. If
+merging makes two sets the same, such as a set you added with `ServiceName` in it, the set is
+written once. The 30-key limit of a set counts the default keys it doesn't already have, so a set
+can have at most 28 keys of your own, and a set with more is skipped and reported. The option does
+nothing outside Lambda, or with `WithoutDimensions()`.
+
+Turning it on for existing code moves each Lambda metric to the combined series. The old series stop
+getting data, so update any dashboards and alarms that use them.
 
 ## Spec compliance and errors
 

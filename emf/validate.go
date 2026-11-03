@@ -94,10 +94,16 @@ func (r *registry) checkNamespace(namespace string) bool {
 }
 
 // checkDimensionSet checks dimensions, with keys from dimensionKeys. The
-// size limit counts each key once.
-func (r *registry) checkDimensionSet(dimensions []Dimension, keys DimensionSet) bool {
+// size limit counts each key once. If defaults isn't nil, it is merged into
+// the set when it is written, so the limit also counts the keys of defaults
+// that the set doesn't have.
+func (r *registry) checkDimensionSet(dimensions []Dimension, keys, defaults DimensionSet) bool {
 	if len(keys) > maxDimensionSetSize {
 		r.invalid("skipped dimension set: has more than %d keys", maxDimensionSetSize)
+		return false
+	}
+	if defaults != nil && len(defaults)+countMissing(keys, defaults) > maxDimensionSetSize {
+		r.invalid("skipped dimension set: has more than %d keys with the Lambda default dimensions merged in", maxDimensionSetSize)
 		return false
 	}
 	for _, d := range dimensions {
@@ -118,6 +124,17 @@ func (r *registry) checkDimensionSet(dimensions []Dimension, keys DimensionSet) 
 	return true
 }
 
+// countMissing returns the number of keys that aren't in set.
+func countMissing(keys, set DimensionSet) int {
+	n := 0
+	for _, key := range keys {
+		if !slices.Contains(set, key) {
+			n++
+		}
+	}
+	return n
+}
+
 // definition returns the first definition of a metric name in any of the
 // logger's contexts.
 func (r *registry) definition(name string) (MetricDefinition, bool) {
@@ -136,7 +153,7 @@ func (r *registry) definition(name string) (MetricDefinition, bool) {
 // with the given key.
 func (r *registry) isDimension(key string) bool {
 	for c := range r.logger.allContexts() {
-		if c.dimensionIndex(key) >= 0 {
+		if c.hasDimension(key) {
 			return true
 		}
 	}
