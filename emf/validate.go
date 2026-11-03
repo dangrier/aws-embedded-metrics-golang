@@ -144,9 +144,10 @@ func (r *registry) isDimension(key string) bool {
 }
 
 // replacesProperty reports whether a new dimension or metric with the given
-// key replaces a property set with Property or PropertyValue. Only the first dimension or
-// metric with the key does, since after that the property is already
-// replaced. The properties New adds may be replaced without a report.
+// key replaces a property set with Property or PropertyValue. Only the first
+// dimension or metric with the key does, since after that the property is
+// already replaced. The properties New adds may be replaced without a
+// report.
 func (r *registry) replacesProperty(key string) bool {
 	_, ok := r.logger.properties[key]
 	return ok && !r.isDimension(key) && !r.isMetric(key)

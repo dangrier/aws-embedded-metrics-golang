@@ -145,18 +145,20 @@ fields @timestamp, requestId, statusCode
 | filter statusCode >= 500
 ```
 
-The value is encoded with `encoding/json` when `PropertyValue` is called, so struct `json` tags
-apply, and changing a map or slice afterwards doesn't change what is logged. `nil` is written as
-`null`. A value that can't be encoded, such as a channel, a func, `NaN`, or a `json.Marshaler` that
-fails, is skipped and reported to the error handler with an error that wraps `emf.ErrInvalid`.
-Setting a key again replaces its value, whether it was set with `Property` or `PropertyValue`.
+The value is encoded with `encoding/json` when `PropertyValue` is called, so its rules apply: struct
+`json` tags are used, a `[]byte` is written as a base64 string, and a `MarshalJSON` method with a
+pointer receiver is only used when you pass a pointer. Changing a map or slice afterwards doesn't
+change what is logged. `nil` is written as `null`. A value that can't be encoded, such as a channel,
+a func, `NaN`, or a `json.Marshaler` that fails or panics, is skipped and reported to the error
+handler with an error that wraps `emf.ErrInvalid`. Setting a key again replaces its value, whether
+it was set with `Property` or `PropertyValue`.
 
 A property shares the log line with dimensions and metrics, so each key can only hold one of them.
-This applies to properties set with `Property` and `PropertyValue` alike. A property with the key of a metric or dimension is skipped and reported. A dimension or metric
-added later with a property's key is kept, and replaces the property, which is reported too. A
-dimension replaces it on every line, and a metric on the lines the metric is written on. The Lambda
-properties the library adds (see [Lambda defaults](#lambda-defaults)) can be replaced without a
-report.
+This applies to properties set with `Property` and `PropertyValue` alike. A property with the key of
+a metric or dimension is skipped and reported. A dimension or metric added later with a property's
+key is kept, and replaces the property, which is reported too. A dimension replaces it on every
+line, and a metric on the lines the metric is written on. The Lambda properties the library adds
+(see [Lambda defaults](#lambda-defaults)) can be replaced without a report.
 
 ### Namespaces and contexts
 

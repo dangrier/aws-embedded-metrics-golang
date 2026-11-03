@@ -162,6 +162,11 @@ func FuzzSpecCompliance(f *testing.F) {
 		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
 			errs = append(errs, err)
 		}))
+		// A property no other input may replace, unless the fuzzer picks
+		// its key, which is checked against every line below.
+		checked := fuzzPropertyValue(extraMetrics+3, intValue, floatValue, dimValue)
+		logger.PropertyValue(fuzzCheckedKey, checked)
+
 		// The property is set first and last, so dimensions and metrics with
 		// its key replace it, and it can't replace them. Property and
 		// PropertyValue replace each other, and the other value's key may
@@ -220,14 +225,50 @@ func FuzzSpecCompliance(f *testing.F) {
 				t.Errorf("error %v does not wrap ErrInvalid", err)
 			}
 		}
+		if !slices.Contains([]string{dimKey, otherValue, intName, floatName, propKey}, fuzzCheckedKey) {
+			assertPropertyValue(t, buf.Bytes(), errs, fuzzCheckedKey, checked)
+		}
 	})
 }
 
+// fuzzCheckedKey is the key of the property FuzzSpecCompliance checks is
+// written on every line.
+const fuzzCheckedKey = "fuzzChecked"
+
+// assertPropertyValue checks a property set with PropertyValue and not
+// replaced is written on every line as the value encoded as JSON, or, if
+// the value can't be encoded, isn't written and is reported.
+func assertPropertyValue(t *testing.T, out []byte, errs []error, key string, value any) {
+	t.Helper()
+	want, encodeErr := json.Marshal(value)
+	for line := range bytes.Lines(out) {
+		var members map[string]json.RawMessage
+		if err := json.Unmarshal(line, &members); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := members[key]
+		switch {
+		case encodeErr == nil && !ok:
+			t.Errorf("expected %q in %s", key, line)
+		case encodeErr == nil && !bytes.Equal(got, want):
+			t.Errorf("expected %q to be %s, got %s in %s", key, want, got, line)
+		case encodeErr != nil && ok:
+			t.Errorf("expected %q to be skipped, since %v, got %s", key, encodeErr, got)
+		}
+	}
+	if encodeErr != nil && !slices.ContainsFunc(errs, func(err error) bool {
+		return strings.Contains(err.Error(), fmt.Sprintf("skipped property %q", key))
+	}) {
+		t.Errorf("expected property %q to be reported, got %v", key, errs)
+	}
+}
+
 // fuzzPropertyValue returns a property value of a type picked by kind,
-// made from the fuzzer's input. A float may be NaN or infinite, which
+// made from the fuzzer's input. A float may be NaN or infinite, and a
+// json.Marshaler or json.RawMessage may not be valid JSON, which
 // PropertyValue skips and reports.
 func fuzzPropertyValue(kind uint8, i int, f float64, s string) any {
-	switch kind % 6 {
+	switch kind % 9 {
 	case 0:
 		return i
 	case 1:
@@ -238,10 +279,21 @@ func fuzzPropertyValue(kind uint8, i int, f float64, s string) any {
 		return nil
 	case 4:
 		return []any{s, i, f}
-	default:
+	case 5:
 		return map[string]any{s: map[string]any{"n": i, "f": f}}
+	case 6:
+		return fuzzMarshaler(s) // may not be valid JSON
+	case 7:
+		return json.RawMessage(s) // may not be valid JSON
+	default:
+		return s + "\xff<&>" // invalid UTF-8, and characters JSON escapes
 	}
 }
+
+// fuzzMarshaler is a json.Marshaler that returns its string as is.
+type fuzzMarshaler string
+
+func (m fuzzMarshaler) MarshalJSON() ([]byte, error) { return []byte(m), nil }
 
 // TestErrorHandler checks each kind of invalid input is skipped and
 // reported, while valid metrics on the same logger are still written.
@@ -624,20 +676,31 @@ func TestEventSizeLimit(t *testing.T) {
 	}
 
 	t.Run("PropertyValue over 1 MB", func(t *testing.T) {
-		var buf bytes.Buffer
+		const n = 1 << 20
+		timestamp := emf.WithTimestamp(time.Now())
+		var small, buf bytes.Buffer
+		emf.New(emf.WithWriter(&small), emf.WithoutDimensions(), timestamp).Metric("m", 1).Log()
+
 		var errs []error
-		emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+		emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), timestamp, emf.WithErrorHandler(func(err error) {
 			errs = append(errs, err)
 		})).
-			PropertyValue("big", make([]int, 1<<20)). // "0," a million times
+			PropertyValue("big", make([]int, n)).
 			Metric("m", 1).
 			Log()
 
-		if buf.Len() < 2<<20 {
-			t.Errorf("expected the line to be written, got %d bytes", buf.Len())
+		// The same line, plus "big":[0,0,...,0] and a comma: n zeros and
+		// n-1 commas in the list.
+		want := small.Len() + len(`"big":[]`) + 2*n - 1 + len(",")
+		if buf.Len() != want {
+			t.Errorf("expected a line of %d bytes, got %d", want, buf.Len())
 		}
 		if len(errs) != 1 || !errors.Is(errs[0], emf.ErrInvalid) {
-			t.Errorf("expected 1 ErrInvalid error, got %v", errs)
+			t.Fatalf("expected 1 ErrInvalid error, got %v", errs)
+		}
+		// The report gives the size of the line, without its newline.
+		if size := fmt.Sprintf("%d bytes", want-1); !strings.Contains(errs[0].Error(), size) {
+			t.Errorf("expected %q in %v", size, errs[0])
 		}
 	})
 }

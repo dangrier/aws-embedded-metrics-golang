@@ -77,9 +77,10 @@ func WithLogGroup(logGroup string) LoggerOption {
 }
 
 // WithErrorHandler sets a function that is called when the logger skips
-// input that would break the EMF spec or can't be encoded as JSON, when a dimension or metric replaces a
-// property with the same key, or when it fails to write. Errors about input
-// wrap ErrInvalid. Without a handler, these errors are ignored.
+// input that would break the EMF spec or can't be encoded as JSON, when a
+// dimension or metric replaces a property with the same key, or when it
+// fails to write. Errors about input wrap ErrInvalid. Without a handler,
+// these errors are ignored.
 // The handler may use the logger. If the logger is used from several
 // goroutines, the handler may be called from several goroutines at once.
 func WithErrorHandler(fn func(error)) LoggerOption {
@@ -163,32 +164,62 @@ func (l *Logger) Property(key, value string) *Logger {
 // filter statusCode >= 500. A nil value is written as JSON null.
 //
 // The value is encoded with encoding/json when PropertyValue is called, so
-// changing a map or slice afterwards doesn't change what is logged. A value
-// that can't be encoded, such as a channel, a func, NaN, or a json.Marshaler
-// that fails, is skipped and reported with an error that wraps ErrInvalid
-// and the error from encoding/json.
+// its rules apply: for example, a []byte is written as a base64 string, and
+// a MarshalJSON method with a pointer receiver is only used when value is a
+// pointer. Changing a map or slice afterwards doesn't change what is logged.
+// A value that can't be encoded, such as a channel, a func, NaN, or a
+// json.Marshaler that fails or panics, is skipped and reported with an error
+// that wraps ErrInvalid and the error from encoding/json, or the panic value
+// if it is an error.
 //
 // The key is checked the same way as for Property, and setting a key again
-// replaces the value, whether it was set with Property or PropertyValue.
+// replaces the value, whether it was set with Property or PropertyValue. If
+// both the key and the value are invalid, both are reported. A
+// json.Marshaler may use the logger. If it sets the same key, the value
+// passed to this call wins, since it is stored after it is encoded.
 func (l *Logger) PropertyValue(key string, value any) *Logger {
 	// Encode outside the lock, so a json.Marshaler may use the logger.
-	encoded, err := json.Marshal(value)
+	encoded, err := encodeProperty(value)
 	l.registry.do(func() {
+		keyOK := l.registry.checkProperty(key)
 		if err != nil {
 			l.registry.report(fmt.Errorf("%w: skipped property %q: value can't be encoded as JSON: %w", ErrInvalid, key, err))
 			return
 		}
-		l.setProperty(key, json.RawMessage(encoded))
+		if keyOK {
+			l.storeProperty(key, json.RawMessage(encoded))
+		}
 	})
 	return l
 }
 
-// setProperty sets a property set with Property or PropertyValue, if the
-// key is allowed. It must be called while holding the registry lock.
+// encodeProperty encodes a property value as JSON. A panic in a
+// json.Marshaler is returned as an error, so a bad value can't crash the
+// program that logs it.
+func encodeProperty(value any) (encoded []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(error); ok {
+				err = fmt.Errorf("panic while encoding: %w", e)
+			} else {
+				err = fmt.Errorf("panic while encoding: %v", r)
+			}
+		}
+	}()
+	return json.Marshal(value)
+}
+
+// setProperty sets a property set with Property, if the key is allowed. It
+// must be called while holding the registry lock.
 func (l *Logger) setProperty(key string, value any) {
-	if !l.registry.checkProperty(key) {
-		return
+	if l.registry.checkProperty(key) {
+		l.storeProperty(key, value)
 	}
+}
+
+// storeProperty stores a property whose key is already checked. It must be
+// called while holding the registry lock.
+func (l *Logger) storeProperty(key string, value any) {
 	if l.properties == nil {
 		l.properties = make(map[string]any)
 	}
