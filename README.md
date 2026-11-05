@@ -153,6 +153,17 @@ a func, `NaN`, or a `json.Marshaler` that fails or panics, is skipped and report
 handler with an error that wraps `emf.ErrInvalid`. Setting a key again replaces its value, whether
 it was set with `Property` or `PropertyValue`.
 
+Each key in a log line must be unique, because when a JSON object has the same key twice, which
+value a reader keeps is undefined. `encoding/json` writes each byte of a key that isn't valid UTF-8
+as U+FFFD, so two different keys can be written as the same one. To avoid that:
+
+- A property key that isn't valid UTF-8, such as `"\xff"`, is skipped and reported. This applies to
+  `Property` and `PropertyValue`. Keys in other languages, like `"café"` or `"日本"`, are fine.
+- A `PropertyValue` value whose JSON has an object with the same key more than once, at any depth,
+  is skipped and reported. This can come from a map key that isn't valid UTF-8, as in
+  `map[string]int{"\xff": 1, "\xfe": 2}`, or from a `json.Marshaler` or `json.RawMessage` that
+  repeats a key.
+
 A property shares the log line with dimensions and metrics, so each key can only hold one of them.
 This applies to properties set with `Property` and `PropertyValue` alike. A property with the key of
 a metric or dimension is skipped and reported. A dimension or metric added later with a property's
@@ -270,8 +281,8 @@ getting data, so update any dashboards and alarms that use them.
 
 Output always follows the [EMF specification](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html).
 Input that would break it is skipped, and the rest is still logged. This includes NaN or infinite
-values, invalid names, unknown units, a name used for both a metric and a dimension, and a property
-value that can't be encoded as JSON.
+values, invalid names, unknown units, a name used for both a metric and a dimension, a property
+value that can't be encoded as JSON, and a property key or value that would repeat a JSON key.
 
 Some input is reported, but still written:
 

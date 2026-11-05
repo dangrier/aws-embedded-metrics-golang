@@ -276,3 +276,125 @@ func TestPropertyValueMarshalerSetsSameKey(t *testing.T) {
 		}
 	}
 }
+
+// dupMarshaler is a json.Marshaler that returns an object with a key twice.
+type dupMarshaler struct{}
+
+func (dupMarshaler) MarshalJSON() ([]byte, error) { return []byte(`{"a":1,"b":{"c":1,"c":2}}`), nil }
+
+// TestPropertyKeyInvalidUTF8 checks the reproduction from issue #50: two
+// keys that are written as the same JSON key, since encoding/json writes
+// each invalid byte as U+FFFD, are both skipped and reported.
+func TestPropertyKeyInvalidUTF8(t *testing.T) {
+	var buf bytes.Buffer
+	var errs []error
+	emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+		errs = append(errs, err)
+	})).
+		Property("\xff", "1").
+		Property("\xfe", "2").
+		PropertyValue("ok\xff", 3).
+		Metric("Requests", 1).
+		Log()
+
+	if len(errs) != 3 {
+		t.Fatalf("expected 3 errors, got %d: %v", len(errs), errs)
+	}
+	for _, err := range errs {
+		if !errors.Is(err, emf.ErrInvalid) || !strings.Contains(err.Error(), "valid UTF-8") {
+			t.Errorf("expected an error about UTF-8 that wraps ErrInvalid, got %v", err)
+		}
+	}
+	assertCompliant(t, buf.Bytes())
+	if bytes.Contains(buf.Bytes(), []byte("�")) || bytes.Contains(buf.Bytes(), []byte(`"ok`)) {
+		t.Errorf("skipped property in output: %s", buf.Bytes())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"Requests":1`)) {
+		t.Errorf("valid metric missing from output: %s", buf.Bytes())
+	}
+}
+
+// TestPropertyValueDuplicateKeys checks a value whose JSON has an object
+// with a key more than once, at any depth, is skipped and reported, and
+// doesn't replace an earlier value for the key.
+func TestPropertyValueDuplicateKeys(t *testing.T) {
+	tcs := []struct {
+		name  string
+		value any
+		key   string // the repeated key the report names
+	}{
+		{"invalid UTF-8 map keys", map[string]int{"\xff": 1, "\xfe": 2}, "�"},
+		{"invalid UTF-8 and U+FFFD", map[string]int{"\xff": 1, "�": 2}, "�"},
+		{"nested invalid UTF-8 map keys", map[string]any{"a": []any{1, map[string]int{"x\xff": 1, "x\xfe": 2}}}, "x�"},
+		{"struct field with invalid UTF-8 map keys", struct {
+			M map[string]bool `json:"m"`
+		}{map[string]bool{"\xc3": true, "\xe2": false}}, "�"},
+		{"Marshaler", dupMarshaler{}, "c"},
+		{"RawMessage", json.RawMessage(`[{"k":1,"k":2}]`), "k"},
+		{"RawMessage with an escaped key", json.RawMessage(`{"k":1,"k":2}`), "k"},
+		{"RawMessage with invalid UTF-8 keys", json.RawMessage("{\"\xff\":1,\"\xfe\":2}"), "�"},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var errs []error
+			emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+				errs = append(errs, err)
+			})).
+				PropertyValue("p", "earlier").
+				PropertyValue("p", tc.value).
+				Metric("good", 1).
+				Log()
+
+			if len(errs) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+			}
+			if !errors.Is(errs[0], emf.ErrInvalid) {
+				t.Errorf("error %v does not wrap ErrInvalid", errs[0])
+			}
+			want := fmt.Sprintf("skipped property %q: value has an object with the key %q more than once", "p", tc.key)
+			if !strings.Contains(errs[0].Error(), want) {
+				t.Errorf("expected %q in %v", want, errs[0])
+			}
+			assertCompliant(t, buf.Bytes())
+			if !bytes.Contains(buf.Bytes(), []byte(`"p":"earlier"`)) {
+				t.Errorf("expected the earlier value to be kept: %s", buf.Bytes())
+			}
+		})
+	}
+}
+
+// TestPropertyNonASCIIKeys checks keys that are valid UTF-8 but not ASCII
+// are still written, at the root and inside values, along with values that
+// look like objects with duplicate keys but are strings or unique keys.
+func TestPropertyNonASCIIKeys(t *testing.T) {
+	var buf bytes.Buffer
+	var errs []error
+	emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+		errs = append(errs, err)
+	})).
+		Property("café", "1").
+		Property("�", "2").
+		PropertyValue("日本", map[string]any{"ключ": 1, "κλειδί": map[string]int{"ключ": 2}, "🙂": 3}).
+		PropertyValue("text", `{"a":1,"a":2}`).
+		PropertyValue("list", []map[string]int{{"a": 1}, {"a": 2}}).
+		Metric("m", 1).
+		Log()
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	assertCompliant(t, buf.Bytes())
+	for _, want := range []string{
+		`"café":"1"`,
+		`"` + "�" + `":"2"`,
+		`"日本":{"κλειδί":{"ключ":2},"ключ":1,"🙂":3}`,
+		`"text":"{\"a\":1,\"a\":2}"`,
+		`"list":[{"a":1},{"a":2}]`,
+	} {
+		if !bytes.Contains(buf.Bytes(), []byte(want)) {
+			t.Errorf("expected %s in %s", want, buf.Bytes())
+		}
+	}
+}
