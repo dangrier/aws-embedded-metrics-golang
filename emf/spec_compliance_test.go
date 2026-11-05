@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -61,6 +63,9 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 		"dimension target number":  aws(`{"Namespace":"ns","Dimensions":[["m"]],"Metrics":[{"Name":"m"}]}`),
 		"extra directive member":   aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}],"Extra":1}`),
 		"bad storage resolution":   aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m","StorageResolution":5}]}`),
+		"repeated dimension key":   aws(`{"Namespace":"ns","Dimensions":[["d","d"]],"Metrics":[{"Name":"m"}]}`),
+		"repeated dimension set":   `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[{"Namespace":"ns","Dimensions":[["d","e"],["e","d"]],"Metrics":[{"Name":"m"}]}]},"d":"v","e":"v","m":1}`,
+		"repeated empty set":       aws(`{"Namespace":"ns","Dimensions":[[],[]],"Metrics":[{"Name":"m"}]}`),
 		"missing _aws":             `{"m":1}`,
 		"trailing data":            aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}`) + `{}`,
 		"empty line":               "\n",
@@ -68,8 +73,7 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1e200}`,
 		"timestamp too old": `{"_aws":{"Timestamp":1,"CloudWatchMetrics":[` +
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1}`,
-		"31 dimensions": aws(`{"Namespace":"ns","Dimensions":[[` +
-			strings.TrimSuffix(strings.Repeat(`"d",`, 31), ",") + `]],"Metrics":[{"Name":"m"}]}`),
+		"31 dimensions": thirtyOneDimensions(),
 		"101 metric definitions": aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[` +
 			strings.TrimSuffix(strings.Repeat(`{"Name":"m"},`, 101), ",") + `]}`),
 	}
@@ -81,6 +85,19 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 			}
 		})
 	}
+}
+
+// thirtyOneDimensions returns a document whose only violation is a dimension
+// set with 31 different keys.
+func thirtyOneDimensions() string {
+	keys := make([]string, 31)
+	values := make([]string, 31)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(`"d%d"`, i)
+		values[i] = fmt.Sprintf(`"d%d":"v"`, i)
+	}
+	return `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[{"Namespace":"ns","Dimensions":[[` +
+		strings.Join(keys, ",") + `]],"Metrics":[{"Name":"m"}]}]},` + strings.Join(values, ",") + `,"m":1}`
 }
 
 // TestSpecCompliance checks the output of every TestEmf case against the
@@ -140,28 +157,43 @@ func TestSpecCompliance(t *testing.T) {
 // output is always spec compliant. Anything invalid must be skipped and
 // reported to the error handler. Run it with: just fuzz
 func FuzzSpecCompliance(f *testing.F) {
-	f.Add("ns", "dimKey", "dimValue", "other", "intMetric", 1, "floatMetric", 1.5, "None", "prop", uint8(0))
-	f.Add("aws-embedded-metrics", "Service", "api", "other", "latency", 250, "size", 1024.0, "Milliseconds", "requestId", uint8(0))
-	f.Add("ns", "same", "value", "other", "same", 1, "other", 2.0, "Count", "p", uint8(0))
-	f.Add("ns", "d", "v", "other", "m", 1, "f", math.NaN(), "None", "p", uint8(0))
-	f.Add("ns", "d", "v", "other", "m", 1, "f", math.Inf(-1), "None", "p", uint8(0))
-	f.Add("ns", "d", "v", "other", "m", 1, "f", 1e300, "None", "p", uint8(0))
-	f.Add("ns", "d", "v", "other", "_aws", 1, "f", 1.0, "None", "_aws", uint8(0))
-	f.Add(" ", ":d", "", "", "", 1, "\x00", 1.0, "Parsecs", "m", uint8(0))
-	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(98))
-	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(255))
-	f.Add("ns", "d", "v", "v", "m", 1, "f", 1.0, "None", "p", uint8(150))
-	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150))
-	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(1))
-	f.Add("ns", "d", "v", "d", "m", 1, "f", math.NaN(), "None", "d", uint8(5))
+	f.Add("ns", "dimKey", "dimValue", "other", "intMetric", 1, "floatMetric", 1.5, "None", "prop", uint8(0), uint8(0))
+	f.Add("aws-embedded-metrics", "Service", "api", "other", "latency", 250, "size", 1024.0, "Milliseconds", "requestId", uint8(0), uint8(0))
+	f.Add("ns", "same", "value", "other", "same", 1, "other", 2.0, "Count", "p", uint8(0), uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", math.NaN(), "None", "p", uint8(0), uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", math.Inf(-1), "None", "p", uint8(0), uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1e300, "None", "p", uint8(0), uint8(0))
+	f.Add("ns", "d", "v", "other", "_aws", 1, "f", 1.0, "None", "_aws", uint8(0), uint8(0))
+	f.Add(" ", ":d", "", "", "", 1, "\x00", 1.0, "Parsecs", "m", uint8(0), uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(98), uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(255), uint8(0))
+	f.Add("ns", "d", "v", "v", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(0))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(0))
+	f.Add("ns", "d", "v", "other", "m", 1, "f", 1.0, "None", "p", uint8(1), uint8(0))
+	f.Add("ns", "d", "v", "d", "m", 1, "f", math.NaN(), "None", "d", uint8(5), uint8(0))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(1))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(2))
+	f.Add("ns", "ServiceName", "v", "w", "m", 1, "f", 1.0, "None", "ServiceType", uint8(3), uint8(2))
+	f.Add("ns", "d", "v", "w", "ServiceName", 1, "ServiceType", 1.0, "None", "p", uint8(0), uint8(2))
+
+	// The Lambda default dimensions are used unless mode%3 is 0, and merged
+	// into each dimension set if it is 2.
+	f.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
 
 	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, otherValue, intName string, intValue int,
-		floatName string, floatValue float64, unit, propKey string, extraMetrics uint8) {
+		floatName string, floatValue float64, unit, propKey string, extraMetrics, mode uint8) {
 		var buf bytes.Buffer
 		var errs []error
-		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+		loggerOpts := []emf.LoggerOption{emf.WithWriter(&buf), emf.WithErrorHandler(func(err error) {
 			errs = append(errs, err)
-		}))
+		})}
+		switch mode % 3 {
+		case 0:
+			loggerOpts = append(loggerOpts, emf.WithoutDimensions())
+		case 2:
+			loggerOpts = append(loggerOpts, emf.WithMergedDefaultDimensions())
+		}
+		logger := emf.New(loggerOpts...)
 		// A property no other input may replace, unless the fuzzer picks
 		// its key, which is checked against every line below.
 		checked := fuzzPropertyValue(extraMetrics+3, intValue, floatValue, dimValue)
@@ -937,6 +969,20 @@ func TestDisagreeingContextsSplit(t *testing.T) {
 // directive's dimensions have its own context's values, and every metric is
 // written for each context that logged it.
 func TestDisagreeingContextsRandom(t *testing.T) {
+	t.Run("without dimensions", func(t *testing.T) {
+		testDisagreeingContextsRandom(t, nil, emf.WithoutDimensions())
+	})
+	t.Run("merged Lambda defaults", func(t *testing.T) {
+		t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+		defaults := map[string]string{"ServiceName": "fn", "ServiceType": "AWS::Lambda::Function"}
+		testDisagreeingContextsRandom(t, defaults, emf.WithMergedDefaultDimensions())
+	})
+}
+
+// testDisagreeingContextsRandom runs TestDisagreeingContextsRandom with a
+// logger option. Every context starts with the defaults, which must be
+// merged into the start of every dimension set and be on every line.
+func testDisagreeingContextsRandom(t *testing.T, defaults map[string]string, opt emf.LoggerOption) {
 	type context struct {
 		dimension func(key, value string)
 		put       func(name string, value float64)
@@ -947,7 +993,7 @@ func TestDisagreeingContextsRandom(t *testing.T) {
 	for seed := range 500 {
 		r := rand.New(rand.NewPCG(uint64(seed), 0))
 		var buf bytes.Buffer
-		logger := emf.New(emf.WithWriter(&buf), emf.WithoutDimensions()).Namespace("c0")
+		logger := emf.New(emf.WithWriter(&buf), opt).Namespace("c0")
 		contexts := []*context{{
 			dimension: func(k, v string) { logger.Dimension(k, v) },
 			put:       func(n string, v float64) { logger.Put(n, v) },
@@ -960,7 +1006,10 @@ func TestDisagreeingContextsRandom(t *testing.T) {
 			})
 		}
 		for _, c := range contexts {
-			c.values, c.metrics = map[string]string{}, map[string]bool{}
+			c.values, c.metrics = maps.Clone(defaults), map[string]bool{}
+			if c.values == nil {
+				c.values = map[string]string{}
+			}
 		}
 
 		for range r.IntN(60) {
@@ -988,6 +1037,11 @@ func TestDisagreeingContextsRandom(t *testing.T) {
 			if err := json.Unmarshal(line, &doc); err != nil {
 				t.Fatal(err)
 			}
+			for key, value := range defaults {
+				if doc[key] != value {
+					t.Fatalf("seed %d: line has %s=%v, want %s\n%s", seed, key, doc[key], value, line)
+				}
+			}
 			for _, d := range doc["_aws"].(map[string]any)["CloudWatchMetrics"].([]any) {
 				dir := d.(map[string]any)
 				namespace := dir["Namespace"].(string)
@@ -996,6 +1050,12 @@ func TestDisagreeingContextsRandom(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, set := range dir["Dimensions"].([]any) {
+					if defaults != nil {
+						keys := set.([]any)
+						if len(keys) < 2 || keys[0] != "ServiceName" || keys[1] != "ServiceType" {
+							t.Fatalf("seed %d: set %v of %s doesn't start with the defaults\n%s", seed, keys, namespace, line)
+						}
+					}
 					for _, k := range set.([]any) {
 						key := k.(string)
 						if want := contexts[i].values[key]; doc[key] != want {
@@ -1015,5 +1075,155 @@ func TestDisagreeingContextsRandom(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestMergedDefaultsLimit checks the 30-key limit of a dimension set counts
+// the Lambda default dimensions merged into it.
+func TestMergedDefaultsLimit(t *testing.T) {
+	keys := func(n int, extra ...string) []emf.Dimension {
+		var dims []emf.Dimension
+		for i := range n {
+			dims = append(dims, emf.NewDimension(fmt.Sprintf("d%d", i), "v"))
+		}
+		for _, key := range extra {
+			dims = append(dims, emf.NewDimension(key, "v"))
+		}
+		return dims
+	}
+	tcs := []struct {
+		name     string
+		lambda   bool
+		opts     []emf.LoggerOption
+		dims     []emf.Dimension
+		reported bool
+	}{
+		{name: "28 keys merged", lambda: true, opts: []emf.LoggerOption{emf.WithMergedDefaultDimensions()}, dims: keys(28)},
+		{name: "29 keys merged", lambda: true, opts: []emf.LoggerOption{emf.WithMergedDefaultDimensions()}, dims: keys(29), reported: true},
+		{name: "29 keys and ServiceName merged", lambda: true, opts: []emf.LoggerOption{emf.WithMergedDefaultDimensions()}, dims: keys(28, "ServiceName")},
+		{name: "28 keys and both defaults merged", lambda: true, opts: []emf.LoggerOption{emf.WithMergedDefaultDimensions()}, dims: keys(28, "ServiceType", "ServiceName")},
+		{name: "30 keys not merged", lambda: true, dims: keys(30)},
+		{name: "30 keys merged outside Lambda", opts: []emf.LoggerOption{emf.WithMergedDefaultDimensions()}, dims: keys(30)},
+		{name: "30 keys merged without dimensions", lambda: true, opts: []emf.LoggerOption{emf.WithMergedDefaultDimensions(), emf.WithoutDimensions()}, dims: keys(30)},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.lambda {
+				t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+			}
+			var buf bytes.Buffer
+			var errs []error
+			opts := append([]emf.LoggerOption{emf.WithWriter(&buf), emf.WithErrorHandler(func(err error) {
+				errs = append(errs, err)
+			})}, tc.opts...)
+			logger := emf.New(opts...)
+			logger.DimensionSet(tc.dims...).Metric("good", 1)
+			logger.NewContext().Namespace("other").DimensionSet(tc.dims...).Metric("other", 1)
+			logger.Log()
+
+			assertCompliant(t, buf.Bytes())
+			if !bytes.Contains(buf.Bytes(), []byte(`"good":1`)) {
+				t.Errorf("valid metric missing from output: %s", buf.Bytes())
+			}
+			added := bytes.Contains(buf.Bytes(), []byte(`"d0"`))
+			if tc.reported {
+				if len(errs) != 2 || added {
+					t.Fatalf("expected the set skipped and reported in both contexts, got %v\n%s", errs, buf.Bytes())
+				}
+				for _, err := range errs {
+					if !errors.Is(err, emf.ErrInvalid) || !strings.Contains(err.Error(), "default dimensions merged") {
+						t.Errorf("unexpected error %v", err)
+					}
+				}
+				return
+			}
+			if len(errs) > 0 || !added {
+				t.Errorf("expected the set added without errors, got %v\n%s", errs, buf.Bytes())
+			}
+		})
+	}
+}
+
+// TestMergedDefaultsAreDimensions checks ServiceName and ServiceType still
+// count as dimensions when they are merged into each set, so a metric or
+// property can't use their names.
+func TestMergedDefaultsAreDimensions(t *testing.T) {
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+	tcs := map[string]func(*emf.Logger){
+		"metric ServiceName":           func(l *emf.Logger) { l.Metric("ServiceName", 1) },
+		"context metric ServiceType":   func(l *emf.Logger) { l.NewContext().Metric("ServiceType", 1) },
+		"property ServiceName":         func(l *emf.Logger) { l.Property("ServiceName", "p") },
+		"property ServiceType":         func(l *emf.Logger) { l.Dimension("Service", "s").Property("ServiceType", "p") },
+		"metric replacing a dimension": func(l *emf.Logger) { l.Dimension("ServiceName", "mine").Metric("ServiceName", 1) },
+	}
+
+	for name, given := range tcs {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var errs []error
+			logger := emf.New(emf.WithWriter(&buf), emf.WithMergedDefaultDimensions(), emf.WithErrorHandler(func(err error) {
+				errs = append(errs, err)
+			}))
+			given(logger)
+			logger.Metric("good", 1).Log()
+
+			if len(errs) != 1 || !errors.Is(errs[0], emf.ErrInvalid) {
+				t.Fatalf("expected 1 error, got %v", errs)
+			}
+			assertCompliant(t, buf.Bytes())
+			if !bytes.Contains(buf.Bytes(), []byte(`"ServiceType":"AWS::Lambda::Function"`)) {
+				t.Errorf("default dimension missing from output: %s", buf.Bytes())
+			}
+		})
+	}
+}
+
+// TestLambdaEnvReadByNew checks the Lambda environment is read once, by New.
+// Contexts made later use the same defaults, even if the environment changed
+// in between, so their dimensions agree with the logger's properties.
+func TestLambdaEnvReadByNew(t *testing.T) {
+	opts := map[string][]emf.LoggerOption{
+		"separate set": nil,
+		"merged":       {emf.WithMergedDefaultDimensions()},
+	}
+	for name, opt := range opts {
+		t.Run(name+", set after New", func(t *testing.T) {
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+			var buf bytes.Buffer
+			logger := emf.New(append([]emf.LoggerOption{emf.WithWriter(&buf)}, opt...)...)
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "late")
+			logger.NewContext().Namespace("c").Metric("m", 1)
+			logger.Log()
+
+			assertCompliant(t, buf.Bytes())
+			if bytes.Contains(buf.Bytes(), []byte("ServiceName")) {
+				t.Errorf("context made after New has Lambda defaults: %s", buf.Bytes())
+			}
+		})
+		t.Run(name+", unset after New", func(t *testing.T) {
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+			var buf bytes.Buffer
+			logger := emf.New(append([]emf.LoggerOption{emf.WithWriter(&buf)}, opt...)...)
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+			logger.NewContext().Namespace("c").Metric("m", 1)
+			logger.Log()
+
+			assertCompliant(t, buf.Bytes())
+			var doc struct {
+				ServiceName string
+				AWS         struct {
+					CloudWatchMetrics []emf.MetricDirective
+				} `json:"_aws"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+				t.Fatal(err)
+			}
+			want := []emf.DimensionSet{{"ServiceName", "ServiceType"}}
+			if doc.ServiceName != "fn" || len(doc.AWS.CloudWatchMetrics) != 1 ||
+				!reflect.DeepEqual(doc.AWS.CloudWatchMetrics[0].Dimensions, want) {
+				t.Errorf("context made after New doesn't have the defaults New read: %s", buf.Bytes())
+			}
+		})
 	}
 }

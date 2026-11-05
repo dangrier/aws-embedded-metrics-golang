@@ -413,6 +413,119 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/33.json",
 	},
+	{
+		name: "merged defaults, no dimension sets",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Metric("foo", 33)
+		},
+		expected: "testdata/9.json",
+	},
+	{
+		name: "merged defaults, one dimension set",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").Metric("Orders", 1)
+		},
+		expected: "testdata/34.json",
+	},
+	{
+		name: "merged defaults, several dimension sets",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.
+				Dimension("Service", "checkout").
+				DimensionSet(emf.NewDimension("Region", "au"), emf.NewDimension("Stage", "prod")).
+				Metric("Orders", 1)
+		},
+		expected: "testdata/35.json",
+	},
+	{
+		name: "merged defaults, set already has ServiceName",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			// Both sets become [ServiceName ServiceType Operation], so it is
+			// written once. The last ServiceName value wins.
+			logger.
+				DimensionSet(emf.NewDimension("Operation", "Get"), emf.NewDimension("ServiceName", "custom")).
+				Dimension("Operation", "Get").
+				Metric("Orders", 1)
+		},
+		expected: "testdata/36.json",
+	},
+	{
+		name: "merged defaults, default set added by hand",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.
+				DimensionSet(
+					emf.NewDimension("ServiceType", "AWS::Lambda::Function"),
+					emf.NewDimension("ServiceName", "some-func-name")).
+				Dimension("Service", "checkout").
+				Metric("Orders", 1)
+		},
+		expected: "testdata/37.json",
+	},
+	{
+		name: "merged defaults, contexts disagree on another dimension",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Dimension("Provider", "paypal").Metric("Refunds", 2)
+			logger.NewContext().Namespace("other").Metric("Approved", 3)
+		},
+		expected: "testdata/38.json",
+	},
+	{
+		name: "merged defaults, contexts agree",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Namespace("other").Dimension("Region", "au").Metric("Refunds", 2)
+		},
+		expected: "testdata/39.json",
+	},
+	{
+		name: "merged defaults, without dimensions",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithMergedDefaultDimensions(), emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		env: lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Metric("foo", 33)
+		},
+		expected: "testdata/17.json",
+	},
+	{
+		name: "merged defaults, outside Lambda",
+		new:  newMerged,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("a", "b").Metric("c", 11)
+		},
+		expected: "testdata/12.json",
+	},
+}
+
+// lambdaEnv is the environment of a Lambda function.
+var lambdaEnv = map[string]string{
+	"AWS_LAMBDA_FUNCTION_NAME":        "some-func-name",
+	"AWS_EXECUTION_ENV":               "golang",
+	"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
+	"AWS_LAMBDA_FUNCTION_VERSION":     "1",
+	"AWS_LAMBDA_LOG_STREAM_NAME":      "log/stream",
+}
+
+// newMerged creates a logger that merges the Lambda default dimensions into
+// each dimension set.
+func newMerged(buf *bytes.Buffer) *emf.Logger {
+	return emf.New(emf.WithMergedDefaultDimensions(), emf.WithWriter(buf))
 }
 
 // run sets up the environment, logs and returns the output.

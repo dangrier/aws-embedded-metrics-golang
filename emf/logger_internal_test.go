@@ -43,6 +43,17 @@ func TestNew(t *testing.T) {
 			},
 		},
 		{
+			name: "with merged default dimensions",
+			opts: []LoggerOption{
+				WithMergedDefaultDimensions(),
+			},
+			expected: &Logger{
+				out:           os.Stdout,
+				timestamp:     time.Now().UnixMilli(),
+				mergeDefaults: true,
+			},
+		},
+		{
 			name: "with log group",
 			opts: []LoggerOption{
 				WithLogGroup("my-logs"),
@@ -68,7 +79,7 @@ func TestNew(t *testing.T) {
 
 // loggersEqual returns a non-nil error if the loggers do not match.
 // It checks the fields set by LoggerOptions: writer, timestamp,
-// withoutDimensions and log group.
+// withoutDimensions, mergeDefaults and log group.
 func loggersEqual(actual, expected *Logger) error {
 	if actual.out != expected.out {
 		return fmt.Errorf("output does not match")
@@ -76,6 +87,10 @@ func loggersEqual(actual, expected *Logger) error {
 
 	if actual.withoutDimensions != expected.withoutDimensions {
 		return fmt.Errorf("withoutDimensions is %v, expected %v", actual.withoutDimensions, expected.withoutDimensions)
+	}
+
+	if actual.mergeDefaults != expected.mergeDefaults {
+		return fmt.Errorf("mergeDefaults is %v, expected %v", actual.mergeDefaults, expected.mergeDefaults)
 	}
 
 	if actual.logGroupName != expected.logGroupName {

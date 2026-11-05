@@ -1,0 +1,31 @@
+{
+  "Operation": "Get",
+  "Orders": 1,
+  "ServiceName": "custom",
+  "ServiceType": "AWS::Lambda::Function",
+  "_aws": {
+    "CloudWatchMetrics": [
+      {
+        "Dimensions": [
+          [
+            "ServiceName",
+            "ServiceType",
+            "Operation"
+          ]
+        ],
+        "Metrics": [
+          {
+            "Name": "Orders",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics"
+      }
+    ],
+    "Timestamp": "<<PRESENCE>>"
+  },
+  "executionEnvironment": "golang",
+  "functionVersion": "1",
+  "logStreamId": "log/stream",
+  "memorySize": "128"
+}
