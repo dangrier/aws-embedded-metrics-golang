@@ -161,26 +161,7 @@ func ExampleWithErrorHandler() {
 // into each of your dimension sets, so each metric is published once, for
 // the combination, instead of once for the default set and once for yours.
 func ExampleWithMergedDefaultDimensions() {
-	// Lambda sets these for you. They're set here to show the output in
-	// Lambda.
-	lambdaEnv := map[string]string{
-		"AWS_LAMBDA_FUNCTION_NAME":        "checkout-fn",
-		"AWS_EXECUTION_ENV":               "AWS_Lambda_provided.al2023",
-		"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
-		"AWS_LAMBDA_FUNCTION_VERSION":     "$LATEST",
-		"AWS_LAMBDA_LOG_STREAM_NAME":      "2026/11/03/[$LATEST]abc123",
-	}
-	for k, v := range lambdaEnv {
-		old, wasSet := os.LookupEnv(k)
-		_ = os.Setenv(k, v)
-		defer func() {
-			if wasSet {
-				_ = os.Setenv(k, old)
-			} else {
-				_ = os.Unsetenv(k)
-			}
-		}()
-	}
+	defer setExampleLambdaEnv()()
 
 	emf.New(exampleTime, emf.WithMergedDefaultDimensions()).
 		Namespace("shop").
@@ -189,4 +170,70 @@ func ExampleWithMergedDefaultDimensions() {
 		Log()
 	// Output:
 	// {"Orders":1,"Service":"checkout","ServiceName":"checkout-fn","ServiceType":"AWS::Lambda::Function","_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"shop","Dimensions":[["ServiceName","ServiceType","Service"]],"Metrics":[{"Name":"Orders","Unit":"Count"}]}]},"executionEnvironment":"AWS_Lambda_provided.al2023","functionVersion":"$LATEST","logStreamId":"2026/11/03/[$LATEST]abc123","memorySize":"128"}
+}
+
+// setExampleLambdaEnv sets the environment Lambda sets for you, to show the
+// output in Lambda, and returns a function that restores it.
+func setExampleLambdaEnv() (restore func()) {
+	lambdaEnv := map[string]string{
+		"AWS_LAMBDA_FUNCTION_NAME":        "checkout-fn",
+		"AWS_EXECUTION_ENV":               "AWS_Lambda_provided.al2023",
+		"AWS_LAMBDA_FUNCTION_MEMORY_SIZE": "128",
+		"AWS_LAMBDA_FUNCTION_VERSION":     "$LATEST",
+		"AWS_LAMBDA_LOG_STREAM_NAME":      "2026/11/03/[$LATEST]abc123",
+	}
+	var restores []func()
+	for k, v := range lambdaEnv {
+		old, wasSet := os.LookupEnv(k)
+		_ = os.Setenv(k, v)
+		restores = append(restores, func() {
+			if wasSet {
+				_ = os.Setenv(k, old)
+			} else {
+				_ = os.Unsetenv(k)
+			}
+		})
+	}
+	return func() {
+		for _, restore := range restores {
+			restore()
+		}
+	}
+}
+
+// SetDimensions replaces the dimension sets. With useDefault false, the
+// Lambda default dimensions ServiceName and ServiceType are dropped, as the
+// official AWS libraries' setDimensions does, while the Lambda properties are
+// still logged.
+func ExampleLogger_SetDimensions() {
+	defer setExampleLambdaEnv()()
+
+	const useDefault = false
+	emf.New(exampleTime).
+		Namespace("shop").
+		SetDimensions(useDefault,
+			[]emf.Dimension{emf.NewDimension("Service", "checkout")},
+			[]emf.Dimension{emf.NewDimension("Service", "checkout"), emf.NewDimension("Region", "ap-southeast-2")},
+		).
+		MetricAs("Orders", 1, emf.Count).
+		Log()
+	// Output:
+	// {"Orders":1,"Region":"ap-southeast-2","Service":"checkout","_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"shop","Dimensions":[["Service"],["Service","Region"]],"Metrics":[{"Name":"Orders","Unit":"Count"}]}]},"executionEnvironment":"AWS_Lambda_provided.al2023","functionVersion":"$LATEST","logStreamId":"2026/11/03/[$LATEST]abc123","memorySize":"128"}
+}
+
+// ResetDimensions removes the dimensions added to a context. Here a context
+// also drops the Lambda default dimensions, so its metric is published
+// without dimensions, while the logger's other metric keeps them.
+func ExampleContext_ResetDimensions() {
+	defer setExampleLambdaEnv()()
+
+	logger := emf.New(exampleTime).Namespace("shop").MetricAs("Orders", 1, emf.Count)
+	logger.NewContext().
+		Namespace("billing").
+		Dimension("Plan", "pro").
+		ResetDimensions(false).
+		MetricAs("Invoices", 1, emf.Count)
+	logger.Log()
+	// Output:
+	// {"Invoices":1,"Orders":1,"ServiceName":"checkout-fn","ServiceType":"AWS::Lambda::Function","_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"shop","Dimensions":[["ServiceName","ServiceType"]],"Metrics":[{"Name":"Orders","Unit":"Count"}]},{"Namespace":"billing","Dimensions":[[]],"Metrics":[{"Name":"Invoices","Unit":"Count"}]}]},"executionEnvironment":"AWS_Lambda_provided.al2023","functionVersion":"$LATEST","logStreamId":"2026/11/03/[$LATEST]abc123","memorySize":"128"}
 }

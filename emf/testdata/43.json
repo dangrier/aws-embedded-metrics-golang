@@ -1,0 +1,36 @@
+{
+  "Declined": 1,
+  "Provider": "card",
+  "Refunds": 2,
+  "_aws": {
+    "CloudWatchMetrics": [
+      {
+        "Dimensions": [
+          [
+            "Provider"
+          ]
+        ],
+        "Metrics": [
+          {
+            "Name": "Declined",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics"
+      },
+      {
+        "Dimensions": [
+          []
+        ],
+        "Metrics": [
+          {
+            "Name": "Refunds",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "other"
+      }
+    ],
+    "Timestamp": "<<PRESENCE>>"
+  }
+}

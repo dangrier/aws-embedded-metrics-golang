@@ -117,6 +117,33 @@ logger.DimensionSet(
 A key repeated within one set is written once, with the last value. Repeats are only removed within
 a context, since each context is a separate directive with its own namespace.
 
+To replace or remove dimensions, use `SetDimensions` or `ResetDimensions`, on the logger or on a
+context. `useDefault` says whether the context keeps the [Lambda default dimensions](#lambda-defaults),
+as in the official AWS libraries:
+
+```go
+// Replace the dimension sets. With useDefault false, ServiceName and ServiceType are no longer
+// written as dimensions, but the Lambda properties still are.
+logger.SetDimensions(false,
+	[]emf.Dimension{emf.NewDimension("Service", "checkout")},
+	[]emf.Dimension{emf.NewDimension("Service", "checkout"), emf.NewDimension("Region", "ap-southeast-2")},
+)
+
+// Remove the dimensions you added, and keep (or bring back) the Lambda defaults.
+logger.ResetDimensions(true)
+```
+
+Each set passed to `SetDimensions` is checked and added as with `DimensionSet`, and an invalid set is
+skipped and reported while the others are kept. With no sets, `SetDimensions(useDefault)` is the same
+as `ResetDimensions(useDefault)`. Both change only that context, in one step, so a concurrent `Log`
+writes either the old dimensions or the new ones.
+
+Once a dimension is removed, a metric or property may use its name, unless another context still has
+that dimension. A property the dimension had replaced is written again. `ServiceName` and
+`ServiceType` stay reserved in Lambda, even after a context drops them, so the defaults can be
+written again. Contexts that were written on separate lines because they disagreed on a value
+share a line again once that value is removed.
+
 ### Properties
 
 Properties are logged with the metrics, but don't become metrics or dimensions. They're handy for
@@ -233,7 +260,8 @@ When `AWS_LAMBDA_FUNCTION_NAME` is set, each logger adds:
 - a dimension set of `ServiceName` (the function name) and `ServiceType` (`AWS::Lambda::Function`)
 - `executionEnvironment`, `memorySize`, `functionVersion` and `logStreamId` properties
 
-Use `WithoutDimensions()` to leave these out. If X-Ray sampled the request, the trace ID is also
+Use `WithoutDimensions()` to leave these out. To keep the properties but drop the dimension set, use
+`ResetDimensions(false)` or `SetDimensions(false, ...)`, which work per context. If X-Ray sampled the request, the trace ID is also
 added as a `traceId` property. The environment is read once, by `New`, and contexts made later with
 `NewContext` use the same values.
 

@@ -511,6 +511,187 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/12.json",
 	},
+	{
+		name: "reset without defaults",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").ResetDimensions(false).Metric("Orders", 1)
+		},
+		expected: "testdata/40.json",
+	},
+	{
+		name: "reset with defaults",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").ResetDimensions(true).Metric("foo", 33)
+		},
+		expected: "testdata/9.json",
+	},
+	{
+		name: "reset without defaults, then with defaults",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.ResetDimensions(false).ResetDimensions(true).Metric("foo", 33)
+		},
+		expected: "testdata/9.json",
+	},
+	{
+		name: "merged defaults, reset without defaults",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").ResetDimensions(false).Metric("Orders", 1)
+		},
+		expected: "testdata/40.json",
+	},
+	{
+		name: "merged defaults, reset with defaults",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").ResetDimensions(true).Metric("foo", 33)
+		},
+		expected: "testdata/9.json",
+	},
+	{
+		name: "reset outside Lambda",
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").ResetDimensions(true).Metric("foo", 33)
+		},
+		expected: "testdata/1.json",
+	},
+	{
+		name: "reset without defaults, outside Lambda",
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").ResetDimensions(false).Metric("foo", 33)
+		},
+		expected: "testdata/1.json",
+	},
+	{
+		name: "dimension added after reset",
+		given: func(logger *emf.Logger) {
+			logger.Dimension("a", "x").Dimension("o", "p").ResetDimensions(true).Dimension("a", "b").Metric("c", 11)
+		},
+		expected: "testdata/12.json",
+	},
+	{
+		name: "dimension added after reset without defaults",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Old", "x").ResetDimensions(false).Dimension("Service", "checkout").Metric("Orders", 1)
+		},
+		expected: "testdata/41.json",
+	},
+	{
+		name: "set dimensions without defaults, one set",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Old", "x").
+				SetDimensions(false, []emf.Dimension{emf.NewDimension("Service", "checkout")}).
+				Metric("Orders", 1)
+		},
+		expected: "testdata/41.json",
+	},
+	{
+		name: "set dimensions with defaults, several sets",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Old", "x").
+				SetDimensions(true,
+					[]emf.Dimension{emf.NewDimension("Service", "checkout")},
+					[]emf.Dimension{emf.NewDimension("Region", "au"), emf.NewDimension("Stage", "prod")},
+					[]emf.Dimension{emf.NewDimension("Service", "checkout")}).
+				Metric("Orders", 1)
+		},
+		expected: "testdata/42.json",
+	},
+	{
+		name: "merged defaults, set dimensions with defaults, several sets",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Old", "x").
+				SetDimensions(true,
+					[]emf.Dimension{emf.NewDimension("Service", "checkout")},
+					[]emf.Dimension{emf.NewDimension("Region", "au"), emf.NewDimension("Stage", "prod")}).
+				Metric("Orders", 1)
+		},
+		expected: "testdata/35.json",
+	},
+	{
+		name: "merged defaults, set dimensions without defaults",
+		new:  newMerged,
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.SetDimensions(false, []emf.Dimension{emf.NewDimension("Service", "checkout")}).Metric("Orders", 1)
+		},
+		expected: "testdata/41.json",
+	},
+	{
+		name: "set dimensions without defaults, no sets",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").SetDimensions(false).Metric("Orders", 1)
+		},
+		expected: "testdata/40.json",
+	},
+	{
+		name: "set dimensions with defaults, no sets",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").SetDimensions(true).Metric("foo", 33)
+		},
+		expected: "testdata/9.json",
+	},
+	{
+		name: "set dimensions outside Lambda",
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Old", "x").
+				SetDimensions(true,
+					[]emf.Dimension{emf.NewDimension("a", "b"), emf.NewDimension("c", "d")},
+					[]emf.Dimension{emf.NewDimension("1", "2"), emf.NewDimension("3", "4")}).
+				Metric("foo", 22)
+		},
+		expected: "testdata/15.json",
+	},
+	{
+		name: "contexts that disagreed share a line after a reset",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Namespace("other").Dimension("Provider", "paypal").Metric("Refunds", 2).ResetDimensions(false)
+		},
+		expected: "testdata/43.json",
+	},
+	{
+		name: "context drops the defaults, the default context keeps them",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Metric("Orders", 1)
+			logger.NewContext().Namespace("other").
+				SetDimensions(false, []emf.Dimension{emf.NewDimension("Region", "au")}).
+				Metric("Refunds", 2)
+		},
+		expected: "testdata/44.json",
+	},
+	{
+		name: "removed dimension names used by a metric and a property",
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Requests", "x").Dimension("Region", "au").ResetDimensions(true).
+				Metric("Requests", 1).
+				Property("Region", "eu")
+		},
+		expected: "testdata/45.json",
+	},
+	{
+		name: "property written again once the dimension that replaced it is removed",
+		given: func(logger *emf.Logger) {
+			logger.Property("Service", "p").Dimension("Service", "checkout").ResetDimensions(true).Metric("Orders", 1)
+		},
+		expected: "testdata/46.json",
+	},
 }
 
 // lambdaEnv is the environment of a Lambda function.
@@ -531,9 +712,8 @@ func newMerged(buf *bytes.Buffer) *emf.Logger {
 // run sets up the environment, logs and returns the output.
 func (tc emfTestCase) run(t *testing.T) []byte {
 	t.Helper()
-	if len(tc.env) > 0 {
-		defer unsetenv(t, tc.env)
-		setenv(t, tc.env)
+	for k, v := range tc.env {
+		t.Setenv(k, v)
 	}
 
 	var buf bytes.Buffer
@@ -595,22 +775,4 @@ func linesAsArray(out []byte) []byte {
 		lines = append(lines, bytes.TrimSuffix(line, []byte("\n")))
 	}
 	return append(append([]byte("["), bytes.Join(lines, []byte(","))...), ']')
-}
-
-func setenv(t *testing.T, env map[string]string) {
-	for k, v := range env {
-		err := os.Setenv(k, v)
-		if err != nil {
-			t.Fatalf("unable to set env variable: %s", k)
-		}
-	}
-}
-
-func unsetenv(t *testing.T, env map[string]string) {
-	for k := range env {
-		err := os.Unsetenv(k)
-		if err != nil {
-			t.Fatalf("unable to unset env variable: %s", k)
-		}
-	}
 }

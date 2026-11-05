@@ -1,0 +1,27 @@
+{
+  "Orders": 1,
+  "Service": "checkout",
+  "_aws": {
+    "CloudWatchMetrics": [
+      {
+        "Dimensions": [
+          [
+            "Service"
+          ]
+        ],
+        "Metrics": [
+          {
+            "Name": "Orders",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics"
+      }
+    ],
+    "Timestamp": "<<PRESENCE>>"
+  },
+  "executionEnvironment": "golang",
+  "functionVersion": "1",
+  "logStreamId": "log/stream",
+  "memorySize": "128"
+}
