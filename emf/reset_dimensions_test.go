@@ -216,6 +216,32 @@ func TestResetDimensions(t *testing.T) {
 	}
 }
 
+// TestDefaultNamesWithoutDimensions checks ServiceName and ServiceType
+// aren't reserved in Lambda when WithoutDimensions leaves the defaults out,
+// before or after a reset.
+func TestDefaultNamesWithoutDimensions(t *testing.T) {
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+	var buf bytes.Buffer
+	var errs []error
+	emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+		errs = append(errs, err)
+	})).
+		ResetDimensions(true).
+		Metric("ServiceName", 1).
+		Property("ServiceType", "p").
+		Log()
+
+	if len(errs) > 0 {
+		t.Errorf("expected no errors, got %v", errs)
+	}
+	assertCompliant(t, buf.Bytes())
+	for _, want := range []string{`"ServiceName":1`, `"ServiceType":"p"`, `"Dimensions":[[]]`} {
+		if !bytes.Contains(buf.Bytes(), []byte(want)) {
+			t.Errorf("expected %s in output: %s", want, buf.Bytes())
+		}
+	}
+}
+
 // TestSetDimensionsLimit checks the 30-key limit of sets passed to
 // SetDimensions counts the merged Lambda defaults only when they are kept.
 func TestSetDimensionsLimit(t *testing.T) {

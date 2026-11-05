@@ -3,6 +3,7 @@ package emf
 import (
 	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 )
@@ -113,4 +114,37 @@ func approxInt64(actual, expected, tolerance int64) error {
 		return fmt.Errorf("value %v is out of tolerance %v±%v", actual, expected, tolerance)
 	}
 	return nil
+}
+
+// TestResetDimensionsHelper checks the helper Flush calls while holding the
+// registry lock drops a context's own dimensions and keeps the Lambda
+// defaults, without changing the shared defaults.
+func TestResetDimensionsHelper(t *testing.T) {
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+	l := New(WithMergedDefaultDimensions())
+	c := l.NewContext().Dimension("Service", "s")
+	l.Dimension("Region", "au")
+	defaults := l.defaults
+	set := slices.Clone(defaults.set)
+
+	l.registry.do(func() {
+		for ctx := range l.allContexts() {
+			ctx.resetDimensions(true)
+		}
+	})
+
+	for _, ctx := range []*Context{&l.defaultContext, c} {
+		if len(ctx.dimensions) != 0 || len(ctx.metricDirective.Dimensions) != 0 || len(ctx.written) != 0 {
+			t.Errorf("own dimensions kept: %+v", ctx)
+		}
+		if ctx.defaults != defaults {
+			t.Errorf("defaults not kept")
+		}
+		if got := ctx.dimensionSets(); !slices.EqualFunc(got, []DimensionSet{set}, slices.Equal) {
+			t.Errorf("expected only the default set, got %v", got)
+		}
+	}
+	if l.defaults != defaults || !slices.Equal(defaults.set, set) {
+		t.Errorf("shared defaults changed")
+	}
 }

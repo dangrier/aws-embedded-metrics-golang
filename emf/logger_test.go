@@ -692,6 +692,17 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/46.json",
 	},
+	{
+		name: "context drops the defaults and disagrees with the default context",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1)
+			logger.NewContext().Namespace("other").
+				SetDimensions(false, []emf.Dimension{emf.NewDimension("Provider", "paypal")}).
+				Metric("Refunds", 2)
+		},
+		expected: "testdata/47.json",
+	},
 }
 
 // lambdaEnv is the environment of a Lambda function.

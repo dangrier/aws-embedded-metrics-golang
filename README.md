@@ -140,8 +140,8 @@ writes either the old dimensions or the new ones.
 
 Once a dimension is removed, a metric or property may use its name, unless another context still has
 that dimension. A property the dimension had replaced is written again. `ServiceName` and
-`ServiceType` stay reserved in Lambda, even after a context drops them, so the defaults can be
-written again. Contexts that were written on separate lines because they disagreed on a value
+`ServiceType` stay reserved while the logger has the Lambda defaults (in Lambda, without
+`WithoutDimensions()`), even after a context drops them, so the defaults can be written again. Contexts that were written on separate lines because they disagreed on a value
 share a line again once that value is removed.
 
 ### Properties
@@ -260,10 +260,11 @@ When `AWS_LAMBDA_FUNCTION_NAME` is set, each logger adds:
 - a dimension set of `ServiceName` (the function name) and `ServiceType` (`AWS::Lambda::Function`)
 - `executionEnvironment`, `memorySize`, `functionVersion` and `logStreamId` properties
 
-Use `WithoutDimensions()` to leave these out. To keep the properties but drop the dimension set, use
-`ResetDimensions(false)` or `SetDimensions(false, ...)`, which work per context. If X-Ray sampled the request, the trace ID is also
-added as a `traceId` property. The environment is read once, by `New`, and contexts made later with
-`NewContext` use the same values.
+Use `WithoutDimensions()` to leave these out. To keep the properties but drop the dimension set for
+one context, use `SetDimensions(false, ...)` with the sets that context should have, or
+`ResetDimensions(false)`, which also removes the dimensions you added to it. If X-Ray sampled the
+request, the trace ID is also added as a `traceId` property. The environment is read once, by `New`,
+and contexts made later with `NewContext` use the same values.
 
 By default, `ServiceName` and `ServiceType` are written as a set of their own, alongside yours. So
 once you add a dimension, each metric is published twice: once per function, and once for your
