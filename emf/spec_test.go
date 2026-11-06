@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -82,6 +83,16 @@ func specViolations(line []byte, now time.Time) []string {
 	if _, err := dec.Token(); err != io.EOF {
 		add("extra data after the JSON object")
 	}
+
+	// RFC 8259 says JSON exchanged between systems MUST be UTF-8.
+	if !utf8.Valid(line) {
+		add("not valid UTF-8")
+	}
+
+	// RFC 8259 says object keys SHOULD be unique, and which value a reader
+	// keeps is undefined. Decoding into a map keeps the last one silently,
+	// so every object is checked here, nested ones included.
+	checkDuplicateKeys(add, json.NewDecoder(bytes.NewReader(line)), "$")
 
 	// The schema validator wants plain decoded JSON, without json.Number.
 	var plain any
@@ -155,6 +166,45 @@ func specViolations(line []byte, now time.Time) []string {
 	}
 
 	return v
+}
+
+// checkDuplicateKeys reads one JSON value from dec, and reports each key
+// that an object in it has more than once. Keys are compared as a reader
+// sees them, after escapes are decoded and invalid UTF-8 is replaced with
+// U+FFFD. It returns false if the value can't be read.
+func checkDuplicateKeys(add func(string, ...any), dec *json.Decoder, path string) bool {
+	tok, err := dec.Token()
+	if err != nil {
+		return false
+	}
+	switch tok {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			tok, err := dec.Token()
+			if err != nil {
+				return false
+			}
+			key, _ := tok.(string)
+			if seen[key] {
+				add("%s has the key %q more than once", path, key)
+			}
+			seen[key] = true
+			if !checkDuplicateKeys(add, dec, fmt.Sprintf("%s[%q]", path, key)) {
+				return false
+			}
+		}
+	case json.Delim('['):
+		for i := 0; dec.More(); i++ {
+			if !checkDuplicateKeys(add, dec, fmt.Sprintf("%s[%d]", path, i)) {
+				return false
+			}
+		}
+	default:
+		return true
+	}
+	_, err = dec.Token() // the closing delimiter
+	return err == nil
 }
 
 // checkMembers reports members the spec does not define. Spec objects

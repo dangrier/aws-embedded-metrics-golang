@@ -1,6 +1,8 @@
 package emf
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrInvalid is wrapped by every error passed to the WithErrorHandler
@@ -239,8 +242,13 @@ func (r *registry) checkTimestamp(timestamp, now time.Time) {
 	}
 }
 
+// checkProperty checks a property key. A key that isn't valid UTF-8 is
+// rejected, since encoding/json writes each invalid byte as U+FFFD, so two
+// different keys could be written as the same JSON key.
 func (r *registry) checkProperty(key string) bool {
 	switch {
+	case !utf8.ValidString(key):
+		r.invalid("skipped property %q: key must be valid UTF-8", key)
 	case key == metadataKey:
 		r.invalid("skipped property %q: key is reserved", key)
 	case r.isMetric(key):
@@ -251,6 +259,87 @@ func (r *registry) checkProperty(key string) bool {
 		return true
 	}
 	return false
+}
+
+// duplicateKey returns a key that an object in encoded has more than once,
+// at any depth. Keys are compared as a JSON reader sees them, after escapes
+// are decoded and invalid UTF-8 is replaced with U+FFFD. encoded must be
+// valid JSON with no whitespace outside strings, as json.Marshal writes it.
+func duplicateKey(encoded []byte) (string, bool) {
+	// Only an object can have a duplicate key, so most values are done here.
+	if bytes.IndexByte(encoded, '{') < 0 {
+		return "", false
+	}
+	var keysBuf [16][]byte
+	var startsBuf [8]int
+	keys := keysBuf[:0]     // the keys of the open objects, innermost last
+	starts := startsBuf[:0] // where each open object's keys start in keys
+	for i := 0; i < len(encoded); i++ {
+		switch encoded[i] {
+		case '{':
+			starts = append(starts, len(keys))
+		case '}':
+			if len(starts) == 0 {
+				return "", false
+			}
+			start := starts[len(starts)-1]
+			if key, ok := repeatedKey(keys[start:]); ok {
+				return key, true
+			}
+			keys, starts = keys[:start], starts[:len(starts)-1]
+		case '"':
+			end := stringEnd(encoded, i)
+			if end < 0 {
+				return "", false
+			}
+			// With no whitespace, a string is a key if a colon follows it.
+			if end+1 < len(encoded) && encoded[end+1] == ':' {
+				keys = append(keys, decodeKey(encoded[i:end+1]))
+			}
+			i = end
+		}
+	}
+	return "", false
+}
+
+// stringEnd returns the index of the quote that ends the JSON string that
+// starts at encoded[start], or -1 if it doesn't end.
+func stringEnd(encoded []byte, start int) int {
+	for i := start + 1; i < len(encoded); i++ {
+		switch encoded[i] {
+		case '\\':
+			i++ // skip the escaped character
+		case '"':
+			return i
+		}
+	}
+	return -1
+}
+
+// decodeKey returns a quoted JSON key as a reader sees it. Most keys have no
+// escapes and are valid UTF-8, so they are used as they are.
+func decodeKey(quoted []byte) []byte {
+	raw := quoted[1 : len(quoted)-1]
+	if bytes.IndexByte(raw, '\\') < 0 && utf8.Valid(raw) {
+		return raw
+	}
+	var key string
+	_ = json.Unmarshal(quoted, &key) // can't fail for a valid JSON string
+	return []byte(key)
+}
+
+// repeatedKey returns a key that keys has more than once. It sorts keys.
+func repeatedKey(keys [][]byte) (string, bool) {
+	if len(keys) < 2 {
+		return "", false
+	}
+	slices.SortFunc(keys, bytes.Compare)
+	for i := 1; i < len(keys); i++ {
+		if bytes.Equal(keys[i-1], keys[i]) {
+			return string(keys[i]), true
+		}
+	}
+	return "", false
 }
 
 // validString reports whether s has 1 to maxLen printable ASCII characters
