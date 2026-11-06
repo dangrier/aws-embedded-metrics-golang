@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -81,6 +82,11 @@ func specViolations(line []byte, now time.Time) []string {
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		add("extra data after the JSON object")
+	}
+
+	// RFC 8259 says JSON exchanged between systems MUST be UTF-8.
+	if !utf8.Valid(line) {
+		add("not valid UTF-8")
 	}
 
 	// RFC 8259 says object keys SHOULD be unique, and which value a reader

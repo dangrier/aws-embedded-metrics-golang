@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dangrier/aws-embedded-metrics-golang/emf"
 )
@@ -69,6 +70,8 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 		"missing _aws":             `{"m":1}`,
 		"trailing data":            aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}`) + `{}`,
 		"empty line":               "\n",
+		"invalid UTF-8": `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[` +
+			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1,"p":"` + "\xff" + `"}`,
 		"metric too big": `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[` +
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1e200}`,
 		"timestamp too old": `{"_aws":{"Timestamp":1,"CloudWatchMetrics":[` +
@@ -96,25 +99,33 @@ func TestSpecValidatorRejectsDuplicateKeys(t *testing.T) {
 		return `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[` +
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1,` + members + `}`
 	}
-	tcs := map[string]struct{ doc, want string }{
-		"root":                     {line(`"p":1,"p":2`), `$ has the key "p" more than once`},
-		"root with a metric":       {line(`"m":2`), `$ has the key "m" more than once`},
-		"escaped key":              {line(`"p":1,"\u0070":2`), `$ has the key "p" more than once`},
-		"invalid UTF-8":            {line("\"\xff\":\"1\",\"\xfe\":\"2\""), "$ has the key \"\uFFFD\" more than once"},
-		"U+FFFD and invalid UTF-8": {line("\"\ufffd\":1,\"\xff\":2"), "$ has the key \"\uFFFD\" more than once"},
-		"nested object":            {line(`"p":{"a":{"b":1,"b":2}}`), `$["p"]["a"] has the key "b" more than once`},
-		"object in an array":       {line(`"p":[1,{"a":1},{"b":1,"b":2}]`), `$["p"][2] has the key "b" more than once`},
+	tcs := map[string]struct {
+		doc  string
+		want []string
+	}{
+		"root":               {line(`"p":1,"p":2`), []string{`$ has the key "p" more than once`}},
+		"root with a metric": {line(`"m":2`), []string{`$ has the key "m" more than once`}},
+		"escaped key":        {line(`"p":1,"\u0070":2`), []string{`$ has the key "p" more than once`}},
+		// A line with invalid UTF-8 breaks the spec anyway, but the keys are
+		// still checked the way encoding/json reads them.
+		"invalid UTF-8": {line("\"\xff\":\"1\",\"\xfe\":\"2\""),
+			[]string{"not valid UTF-8", "$ has the key \"\uFFFD\" more than once"}},
+		"U+FFFD and invalid UTF-8": {line("\"\ufffd\":1,\"\xff\":2"),
+			[]string{"not valid UTF-8", "$ has the key \"\uFFFD\" more than once"}},
+		"escaped U+FFFD and U+FFFD": {line(`"\ufffd":1,"` + "\uFFFD" + `":2`), []string{"$ has the key \"\uFFFD\" more than once"}},
+		"nested object":             {line(`"p":{"a":{"b":1,"b":2}}`), []string{`$["p"]["a"] has the key "b" more than once`}},
+		"object in an array":        {line(`"p":[1,{"a":1},{"b":1,"b":2}]`), []string{`$["p"][2] has the key "b" more than once`}},
 		"in _aws": {
 			`{"_aws":{"Timestamp":1574109732004,"Timestamp":1574109732004,"CloudWatchMetrics":[` +
 				`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1}`,
-			`$["_aws"] has the key "Timestamp" more than once`,
+			[]string{`$["_aws"] has the key "Timestamp" more than once`},
 		},
 	}
 
 	for name, tc := range tcs {
 		t.Run(name, func(t *testing.T) {
 			v := specViolations([]byte(tc.doc), now)
-			if !slices.Equal(v, []string{tc.want}) {
+			if !slices.Equal(v, tc.want) {
 				t.Errorf("expected only %q, got %q for %s", tc.want, v, tc.doc)
 			}
 		})
@@ -222,6 +233,9 @@ func FuzzSpecCompliance(f *testing.F) {
 	f.Add("ns", "d", "\xff", "\uFFFD", "m", 1, "f", 1.0, "None", "\xfe", uint8(5), uint8(0))
 	f.Add("ns", "d", "\xff", "w", "m", 1, "f", 1.0, "None", "p", uint8(8), uint8(0))
 	f.Add("ns", "d", "\xffa\xfe", "w", "m", 1, "f", 1.0, "None", "p", uint8(18), uint8(0))
+	// A json.RawMessage that repeats a key, or isn't valid UTF-8.
+	f.Add("ns", "d", `{"a":1,"a":2}`, "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
+	f.Add("ns", "d", "{\"\xe2\x82\":1,\"\xff\":2}", "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
 
 	// The Lambda default dimensions are used unless mode%3 is 0, and merged
 	// into each dimension set if it is 2.
@@ -316,11 +330,14 @@ const fuzzCheckedKey = "fuzzChecked"
 
 // assertPropertyValue checks a property set with PropertyValue and not
 // replaced is written on every line as the value encoded as JSON, or, if
-// the value can't be encoded or has an object with a key more than once,
-// isn't written and is reported.
+// the value can't be encoded, isn't valid UTF-8 or has an object with a
+// key more than once, isn't written and is reported.
 func assertPropertyValue(t *testing.T, out []byte, errs []error, key string, value any) {
 	t.Helper()
 	want, encodeErr := json.Marshal(value)
+	if encodeErr == nil && !utf8.Valid(want) {
+		encodeErr = errors.New("not valid UTF-8")
+	}
 	if encodeErr == nil {
 		// A value with an object that has a key more than once is skipped.
 		var dups []string

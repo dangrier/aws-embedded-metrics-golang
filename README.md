@@ -163,6 +163,10 @@ as U+FFFD, so two different keys can be written as the same one. To avoid that:
   is skipped and reported. This can come from a map key that isn't valid UTF-8, as in
   `map[string]int{"\xff": 1, "\xfe": 2}`, or from a `json.Marshaler` or `json.RawMessage` that
   repeats a key.
+- A `PropertyValue` value from a `json.Marshaler` or `json.RawMessage` whose JSON isn't valid UTF-8
+  is skipped and reported. `encoding/json` copies that JSON as it is, and readers decode invalid
+  bytes in different ways, so keys that differ in Go can be one key elsewhere. Go strings are fine:
+  `encoding/json` replaces their invalid bytes with U+FFFD.
 
 A property shares the log line with dimensions and metrics, so each key can only hold one of them.
 This applies to properties set with `Property` and `PropertyValue` alike. A property with the key of

@@ -306,7 +306,7 @@ func TestPropertyKeyInvalidUTF8(t *testing.T) {
 		}
 	}
 	assertCompliant(t, buf.Bytes())
-	if bytes.Contains(buf.Bytes(), []byte("�")) || bytes.Contains(buf.Bytes(), []byte(`"ok`)) {
+	if bytes.Contains(buf.Bytes(), []byte("\uFFFD")) || bytes.Contains(buf.Bytes(), []byte(`"ok`)) {
 		t.Errorf("skipped property in output: %s", buf.Bytes())
 	}
 	if !bytes.Contains(buf.Bytes(), []byte(`"Requests":1`)) {
@@ -323,16 +323,15 @@ func TestPropertyValueDuplicateKeys(t *testing.T) {
 		value any
 		key   string // the repeated key the report names
 	}{
-		{"invalid UTF-8 map keys", map[string]int{"\xff": 1, "\xfe": 2}, "�"},
-		{"invalid UTF-8 and U+FFFD", map[string]int{"\xff": 1, "�": 2}, "�"},
-		{"nested invalid UTF-8 map keys", map[string]any{"a": []any{1, map[string]int{"x\xff": 1, "x\xfe": 2}}}, "x�"},
+		{"invalid UTF-8 map keys", map[string]int{"\xff": 1, "\xfe": 2}, "\uFFFD"},
+		{"invalid UTF-8 and U+FFFD", map[string]int{"\xff": 1, "\uFFFD": 2}, "\uFFFD"},
+		{"nested invalid UTF-8 map keys", map[string]any{"a": []any{1, map[string]int{"x\xff": 1, "x\xfe": 2}}}, "x\uFFFD"},
 		{"struct field with invalid UTF-8 map keys", struct {
 			M map[string]bool `json:"m"`
-		}{map[string]bool{"\xc3": true, "\xe2": false}}, "�"},
+		}{map[string]bool{"\xc3": true, "\xe2": false}}, "\uFFFD"},
 		{"Marshaler", dupMarshaler{}, "c"},
 		{"RawMessage", json.RawMessage(`[{"k":1,"k":2}]`), "k"},
 		{"RawMessage with an escaped key", json.RawMessage(`{"k":1,"k":2}`), "k"},
-		{"RawMessage with invalid UTF-8 keys", json.RawMessage("{\"\xff\":1,\"\xfe\":2}"), "�"},
 	}
 
 	for _, tc := range tcs {
@@ -375,7 +374,7 @@ func TestPropertyNonASCIIKeys(t *testing.T) {
 		errs = append(errs, err)
 	})).
 		Property("café", "1").
-		Property("�", "2").
+		Property("\uFFFD", "2").
 		PropertyValue("日本", map[string]any{"ключ": 1, "κλειδί": map[string]int{"ключ": 2}, "🙂": 3}).
 		PropertyValue("text", `{"a":1,"a":2}`).
 		PropertyValue("list", []map[string]int{{"a": 1}, {"a": 2}}).
@@ -388,7 +387,7 @@ func TestPropertyNonASCIIKeys(t *testing.T) {
 	assertCompliant(t, buf.Bytes())
 	for _, want := range []string{
 		`"café":"1"`,
-		`"` + "�" + `":"2"`,
+		`"` + "\uFFFD" + `":"2"`,
 		`"日本":{"κλειδί":{"ключ":2},"ключ":1,"🙂":3}`,
 		`"text":"{\"a\":1,\"a\":2}"`,
 		`"list":[{"a":1},{"a":2}]`,
@@ -397,4 +396,72 @@ func TestPropertyNonASCIIKeys(t *testing.T) {
 			t.Errorf("expected %s in %s", want, buf.Bytes())
 		}
 	}
+}
+
+// rawMarshaler is a json.Marshaler that returns its bytes as they are.
+type rawMarshaler []byte
+
+func (m rawMarshaler) MarshalJSON() ([]byte, error) { return m, nil }
+
+// TestPropertyValueInvalidUTF8 checks a value whose JSON isn't valid UTF-8
+// is skipped and reported. encoding/json copies the JSON of a
+// json.RawMessage or json.Marshaler as it is, and readers decode invalid
+// bytes in different ways: {"\xe2\x82":1,"\xff":2} has two different keys
+// in Go, but one key in readers that replace each broken sequence with one
+// U+FFFD.
+func TestPropertyValueInvalidUTF8(t *testing.T) {
+	tcs := []struct {
+		name  string
+		value any
+	}{
+		{"RawMessage with keys other readers see as one", json.RawMessage("{\"\xe2\x82\":1,\"\xff\":2}")},
+		{"RawMessage with invalid UTF-8 keys", json.RawMessage("{\"\xff\":1,\"\xfe\":2}")},
+		{"RawMessage string", json.RawMessage("\"\xff\"")},
+		{"Marshaler in a slice", []any{1, rawMarshaler("{\"a\":\"\xc3\"}")}},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var errs []error
+			emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+				errs = append(errs, err)
+			})).
+				PropertyValue("p", "earlier").
+				PropertyValue("p", tc.value).
+				Metric("good", 1).
+				Log()
+
+			if len(errs) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+			}
+			if !errors.Is(errs[0], emf.ErrInvalid) || !strings.Contains(errs[0].Error(), `skipped property "p": value's JSON is not valid UTF-8`) {
+				t.Errorf("expected an error about UTF-8 that wraps ErrInvalid, got %v", errs[0])
+			}
+			assertCompliant(t, buf.Bytes())
+			if !bytes.Contains(buf.Bytes(), []byte(`"p":"earlier"`)) {
+				t.Errorf("expected the earlier value to be kept: %s", buf.Bytes())
+			}
+		})
+	}
+
+	t.Run("Go strings are still written", func(t *testing.T) {
+		// json.Marshal replaces invalid UTF-8 in a Go string with U+FFFD,
+		// so the value is valid UTF-8 and is written.
+		var buf bytes.Buffer
+		var errs []error
+		emf.New(emf.WithWriter(&buf), emf.WithoutDimensions(), emf.WithErrorHandler(func(err error) {
+			errs = append(errs, err)
+		})).
+			PropertyValue("p", map[string]string{"\xe2\x82": "\xff"}).
+			Metric("good", 1).
+			Log()
+		if len(errs) != 0 {
+			t.Fatalf("expected no errors, got %v", errs)
+		}
+		assertCompliant(t, buf.Bytes())
+		if want := "\"p\":{\"\uFFFD\uFFFD\":\"\uFFFD\"}"; !bytes.Contains(buf.Bytes(), []byte(want)) {
+			t.Errorf("expected %s in %s", want, buf.Bytes())
+		}
+	})
 }

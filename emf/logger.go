@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // Logger for metrics with default Context. A Logger and its Contexts are
@@ -252,6 +253,10 @@ func (l *Logger) Property(key, value string) *Logger {
 // is written as U+FFFD, so map[string]int{"\xff": 1, "\xfe": 2} has the key
 // "\uFFFD" twice. So can a json.Marshaler or a json.RawMessage.
 //
+// encoding/json copies the JSON from a json.Marshaler or json.RawMessage
+// as it is, so it may hold bytes that aren't valid UTF-8, which readers
+// decode in different ways. Such a value is skipped and reported too.
+//
 // The key is checked the same way as for Property, and setting a key again
 // replaces the value, whether it was set with Property or PropertyValue. If
 // both the key and the value are invalid, both are reported. A
@@ -260,9 +265,10 @@ func (l *Logger) Property(key, value string) *Logger {
 func (l *Logger) PropertyValue(key string, value any) *Logger {
 	// Encode outside the lock, so a json.Marshaler may use the logger.
 	encoded, err := encodeProperty(value)
+	validUTF8 := err != nil || utf8.Valid(encoded)
 	var dup string
 	var hasDup bool
-	if err == nil {
+	if err == nil && validUTF8 {
 		dup, hasDup = duplicateKey(encoded)
 	}
 	l.registry.do(func() {
@@ -270,6 +276,8 @@ func (l *Logger) PropertyValue(key string, value any) *Logger {
 		switch {
 		case err != nil:
 			l.registry.report(fmt.Errorf("%w: skipped property %q: value can't be encoded as JSON: %w", ErrInvalid, key, err))
+		case !validUTF8:
+			l.registry.invalid("skipped property %q: value's JSON is not valid UTF-8", key)
 		case hasDup:
 			l.registry.invalid("skipped property %q: value has an object with the key %q more than once", key, dup)
 		case keyOK:
