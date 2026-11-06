@@ -823,9 +823,7 @@ func (c *Context) dimensionSet(dimensions []Dimension) {
 
 // resetDimensions removes the dimension sets and values added to c, and
 // sets whether c writes the logger's default dimensions. The slices are
-// replaced, not truncated, so a snapshot taken before stays valid. Flush
-// calls resetDimensions(true) on each context, to drop their own dimensions
-// and keep the defaults.
+// replaced, not truncated, so a snapshot taken before stays valid.
 func (c *Context) resetDimensions(useDefault bool) {
 	c.metricDirective.Dimensions = nil
 	c.dimensions = nil
@@ -834,6 +832,15 @@ func (c *Context) resetDimensions(useDefault bool) {
 	if useDefault {
 		c.defaults = c.registry.logger.defaults
 	}
+}
+
+// resetOwnDimensions removes the dimension sets and values added to c, and
+// keeps c's choice about the default dimensions: a context that dropped them
+// with ResetDimensions(false) or SetDimensions(false, ...) doesn't get them
+// back. Flush calls it on each context while holding the registry lock, so
+// the next unit of work starts without the last one's dimensions.
+func (c *Context) resetOwnDimensions() {
+	c.resetDimensions(c.defaults != nil)
 }
 
 // setDimensions replaces c's dimension sets and values with sets.

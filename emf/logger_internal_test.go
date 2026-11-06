@@ -1,6 +1,7 @@
 package emf
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"slices"
@@ -116,35 +117,62 @@ func approxInt64(actual, expected, tolerance int64) error {
 	return nil
 }
 
-// TestResetDimensionsHelper checks the helper Flush calls while holding the
-// registry lock drops a context's own dimensions and keeps the Lambda
-// defaults, without changing the shared defaults.
-func TestResetDimensionsHelper(t *testing.T) {
-	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
-	l := New(WithMergedDefaultDimensions())
-	c := l.NewContext().Dimension("Service", "s")
-	l.Dimension("Region", "au")
-	defaults := l.defaults
-	set := slices.Clone(defaults.set)
+// TestResetOwnDimensions checks the helper Flush calls while holding the
+// registry lock: it drops each context's own dimensions, keeps the Lambda
+// defaults for contexts that use them, doesn't bring them back for contexts
+// that dropped them, and doesn't change the shared defaults.
+func TestResetOwnDimensions(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("merged %v", merged), func(t *testing.T) {
+			t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+			var buf bytes.Buffer
+			opts := []LoggerOption{WithWriter(&buf)}
+			if merged {
+				opts = append(opts, WithMergedDefaultDimensions())
+			}
+			l := New(opts...)
+			l.Dimension("Region", "au")
+			kept := l.NewContext().Namespace("kept").Dimension("Service", "s")
+			dropped := l.NewContext().Namespace("dropped").SetDimensions(false, []Dimension{{"Plan", "pro"}})
+			defaults := l.defaults
+			set := slices.Clone(defaults.set)
 
-	l.registry.do(func() {
-		for ctx := range l.allContexts() {
-			ctx.resetDimensions(true)
-		}
-	})
+			l.registry.do(func() {
+				for ctx := range l.allContexts() {
+					ctx.resetOwnDimensions()
+				}
+			})
 
-	for _, ctx := range []*Context{&l.defaultContext, c} {
-		if len(ctx.dimensions) != 0 || len(ctx.metricDirective.Dimensions) != 0 || len(ctx.written) != 0 {
-			t.Errorf("own dimensions kept: %+v", ctx)
-		}
-		if ctx.defaults != defaults {
-			t.Errorf("defaults not kept")
-		}
-		if got := ctx.dimensionSets(); !slices.EqualFunc(got, []DimensionSet{set}, slices.Equal) {
-			t.Errorf("expected only the default set, got %v", got)
-		}
-	}
-	if l.defaults != defaults || !slices.Equal(defaults.set, set) {
-		t.Errorf("shared defaults changed")
+			for _, ctx := range []*Context{&l.defaultContext, kept, dropped} {
+				if len(ctx.dimensions) != 0 || len(ctx.metricDirective.Dimensions) != 0 || len(ctx.written) != 0 {
+					t.Errorf("%s: own dimensions kept: %+v", ctx.metricDirective.Namespace, ctx)
+				}
+			}
+			for _, ctx := range []*Context{&l.defaultContext, kept} {
+				if ctx.defaults != defaults {
+					t.Errorf("%s: defaults not kept", ctx.metricDirective.Namespace)
+				}
+			}
+			if dropped.defaults != nil {
+				t.Error("dropped: defaults written again")
+			}
+			if l.defaults != defaults || !slices.Equal(defaults.set, set) {
+				t.Error("shared defaults changed")
+			}
+
+			l.Metric("Orders", 1)
+			kept.Metric("Kept", 1)
+			dropped.Metric("Invoices", 1)
+			l.Log()
+			for _, want := range []string{
+				`{"Namespace":"aws-embedded-metrics","Dimensions":[["ServiceName","ServiceType"]]`,
+				`{"Namespace":"kept","Dimensions":[["ServiceName","ServiceType"]]`,
+				`{"Namespace":"dropped","Dimensions":[[]]`,
+			} {
+				if !bytes.Contains(buf.Bytes(), []byte(want)) {
+					t.Errorf("expected %s in output: %s", want, buf.Bytes())
+				}
+			}
+		})
 	}
 }
