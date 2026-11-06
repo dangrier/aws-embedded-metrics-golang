@@ -35,9 +35,9 @@ type Logger struct {
 
 // Context gives ability to add another MetricDirective section for Logger.
 type Context struct {
-	metricDirective MetricDirective  // its Dimensions are only the sets added to the context
-	dimensions      []dimensionValue // only the values added to the context
-	defaults        *defaultDimensions
+	metricDirective MetricDirective    // its Dimensions are only the sets added to the context
+	dimensions      []dimensionValue   // only the values added to the context
+	defaults        *defaultDimensions // the logger's, or nil once the context drops them
 	// written are the sets to write when the context has sets of its own
 	// and defaults: its sets combined with the default set. They are kept
 	// as each set is added, so Log doesn't build them again.
@@ -45,8 +45,8 @@ type Context struct {
 	registry *registry
 }
 
-// defaultDimensions are the Lambda default dimensions, shared by every
-// context of a logger. They are kept apart from the dimensions added to a
+// defaultDimensions are the Lambda default dimensions, shared by the
+// contexts of a logger that haven't dropped them. They are kept apart from the dimensions added to a
 // context, and only combined with them when a line is built. A value added
 // to a context with a default key replaces the default value in that
 // context. They are never changed after they are made, so loggers can share
@@ -125,7 +125,9 @@ func WithoutDimensions() LoggerOption {
 // WithMergedDefaultDimensions adds the Lambda default dimensions,
 // ServiceName and ServiceType, to each of your dimension sets, as the
 // official AWS libraries do, instead of writing them as a separate set. A
-// context without dimension sets of its own still gets the default set.
+// context without dimension sets of its own still gets the default set,
+// unless it dropped the defaults with ResetDimensions(false) or
+// SetDimensions(false, ...).
 // Each metric is then published once per set of yours, instead of once more
 // for the default set, so it costs less. The 30-key limit of a dimension set
 // counts the default keys it doesn't already have, so a set of yours can have
@@ -341,9 +343,32 @@ func (l *Logger) Dimension(key, value string) *Logger {
 // same keys, in any order, the set isn't added again, but the values are
 // updated. A key that is already a property replaces it, and that is
 // reported. With WithMergedDefaultDimensions in Lambda, a set may have at
-// most 30 keys including ServiceName and ServiceType.
+// most 30 keys including ServiceName and ServiceType, unless the context
+// dropped the defaults.
 func (l *Logger) DimensionSet(dimensions ...Dimension) *Logger {
 	l.registry.do(func() { l.defaultContext.dimensionSet(dimensions) })
+	return l
+}
+
+// ResetDimensions removes the dimension sets and values added to the
+// default context. With useDefault false, the default context also stops
+// writing the Lambda default dimensions, ServiceName and ServiceType, while
+// the Lambda properties are still written. With useDefault true, it writes
+// them again. Other contexts aren't changed. See Context.ResetDimensions for
+// what happens to the removed keys.
+func (l *Logger) ResetDimensions(useDefault bool) *Logger {
+	l.registry.do(func() { l.defaultContext.resetDimensions(useDefault) })
+	return l
+}
+
+// SetDimensions replaces the dimension sets and values of the default
+// context with sets, each added as with DimensionSet. With useDefault false,
+// the default context stops writing the Lambda default dimensions, as the
+// official AWS libraries' setDimensions does. With useDefault true, they are
+// kept, or written again if they were dropped. With no sets, it is the same
+// as ResetDimensions(useDefault). See Context.SetDimensions for details.
+func (l *Logger) SetDimensions(useDefault bool, sets ...[]Dimension) *Logger {
+	l.registry.do(func() { l.defaultContext.setDimensions(useDefault, sets) })
 	return l
 }
 
@@ -448,8 +473,8 @@ func (l *Logger) Log() {
 
 // snapshot returns the root object of each log event to write. It must be
 // called while holding the registry lock. Metric and dimension slices are
-// only ever appended to, so the snapshot stays valid after the lock is
-// released.
+// only ever appended to, or replaced by new ones when dimensions are reset,
+// so the snapshot stays valid after the lock is released.
 func (l *Logger) snapshot() []map[string]any {
 	directives := l.directives()
 	if len(directives) == 0 {
@@ -732,9 +757,55 @@ func (c *Context) Dimension(key, value string) *Context {
 // same keys, in any order, the set isn't added again, but the values are
 // updated. A key that is already a property replaces it, and that is
 // reported. With WithMergedDefaultDimensions in Lambda, a set may have at
-// most 30 keys including ServiceName and ServiceType.
+// most 30 keys including ServiceName and ServiceType, unless the context
+// dropped the defaults.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
 	c.registry.do(func() { c.dimensionSet(dimensions) })
+	return c
+}
+
+// ResetDimensions removes the dimension sets and values added to the
+// context. With useDefault false, the context also stops writing the Lambda
+// default dimensions, ServiceName and ServiceType, while the Lambda
+// properties are still written. With useDefault true, it writes them again.
+// The logger's other contexts, and contexts made later with NewContext, still
+// write them. Outside Lambda, or with WithoutDimensions, useDefault makes no
+// difference.
+//
+// The removed keys are no longer dimensions of the context, so a property
+// they replaced is written again, and the context no longer disagrees with
+// other contexts on their values, so it can share their lines again. A
+// metric or property may then use a removed key, unless another context
+// still has a dimension with that key. When the logger has the Lambda
+// defaults (in Lambda, without WithoutDimensions), ServiceName and
+// ServiceType stay reserved for them, even in a context that dropped them,
+// so the defaults can be written again. A property that was skipped because
+// its key was a dimension isn't restored: set it again.
+//
+// Dimensions added afterwards follow the usual rules. A dimension that
+// replaces a property is reported again, since the property was no longer
+// replaced in between.
+func (c *Context) ResetDimensions(useDefault bool) *Context {
+	c.registry.do(func() { c.resetDimensions(useDefault) })
+	return c
+}
+
+// SetDimensions replaces the dimension sets and values of the context with
+// sets, in one step, so a concurrent Log writes either the old dimensions or
+// the new ones. With useDefault false, the context stops writing the Lambda
+// default dimensions, as the official AWS libraries' setDimensions does. With
+// useDefault true, they are kept, or written again if they were dropped, and
+// WithMergedDefaultDimensions merges them into each set.
+//
+// Each set is added as with DimensionSet: an invalid set is skipped and
+// reported while the others are still added, a set with the same keys as an
+// earlier one isn't added again, and the 30-key limit counts the merged
+// default keys. A key that replaces a property is reported, unless the
+// context already had it as a dimension before the call. With no sets, it is
+// the same as ResetDimensions(useDefault). See ResetDimensions for what
+// happens to keys that aren't set again.
+func (c *Context) SetDimensions(useDefault bool, sets ...[]Dimension) *Context {
+	c.registry.do(func() { c.setDimensions(useDefault, sets) })
 	return c
 }
 
@@ -769,13 +840,51 @@ func (c *Context) namespace(namespace string) {
 }
 
 func (c *Context) dimensionSet(dimensions []Dimension) {
+	c.addDimensionSet(dimensions, nil)
+}
+
+// resetDimensions removes the dimension sets and values added to c, and
+// sets whether c writes the logger's default dimensions. The slices are
+// replaced, not truncated, so a snapshot taken before stays valid.
+func (c *Context) resetDimensions(useDefault bool) {
+	c.metricDirective.Dimensions = nil
+	c.dimensions = nil
+	c.written = nil
+	c.defaults = nil
+	if useDefault {
+		c.defaults = c.registry.logger.defaults
+	}
+}
+
+// resetOwnDimensions removes the dimension sets and values added to c, and
+// keeps c's choice about the default dimensions: a context that dropped them
+// with ResetDimensions(false) or SetDimensions(false, ...) doesn't get them
+// back. Flush calls it on each context while holding the registry lock, so
+// the next unit of work starts without the last one's dimensions.
+func (c *Context) resetOwnDimensions() {
+	c.resetDimensions(c.defaults != nil)
+}
+
+// setDimensions replaces c's dimension sets and values with sets.
+func (c *Context) setDimensions(useDefault bool, sets [][]Dimension) {
+	before := c.dimensions
+	c.resetDimensions(useDefault)
+	for _, dimensions := range sets {
+		c.addDimensionSet(dimensions, before)
+	}
+}
+
+// addDimensionSet adds a set of dimensions to c. A key that replaces a
+// property is reported, unless it is in before, the values c had before
+// SetDimensions reset them, since then the property was already replaced.
+func (c *Context) addDimensionSet(dimensions []Dimension, before []dimensionValue) {
 	set := dimensionKeys(dimensions)
 	if !c.registry.checkDimensionSet(dimensions, set, c.mergedDefaults()) {
 		return
 	}
 	// The dimension is kept, but the property is no longer logged.
 	for _, key := range set {
-		if c.registry.replacesProperty(key) {
+		if c.registry.replacesProperty(key) && dimensionIndex(before, key) < 0 {
 			c.registry.invalid("dimension %q replaces the property with the same key", key)
 		}
 	}
@@ -799,8 +908,8 @@ func (c *Context) dimensionSet(dimensions []Dimension) {
 // the result to the sets to write, unless it is already there. Without
 // merging, the default set comes first, and a set with the default keys
 // isn't added again. With merging, the default keys are added to the set.
-// Like the sets added to c, written is only ever appended to, so a snapshot
-// of it stays valid.
+// Like the sets added to c, written is only appended to, or replaced by a
+// new slice when dimensions are reset, so a snapshot of it stays valid.
 func (c *Context) addWritten(set DimensionSet) {
 	defaults := c.defaults
 	if defaults == nil {
@@ -902,14 +1011,6 @@ func (c *Context) dimensionCount() int {
 	return len(c.dimensions) + len(c.defaults.values)
 }
 
-// hasDimension reports whether c has a value for key, its own or a default.
-func (c *Context) hasDimension(key string) bool {
-	if c.dimensionIndex(key) >= 0 {
-		return true
-	}
-	return c.defaults != nil && slices.ContainsFunc(c.defaults.values, func(d dimensionValue) bool { return d.key == key })
-}
-
 // setDimension sets the value of a dimension whose key is already checked.
 // Setting a key again keeps the last value.
 func (c *Context) setDimension(key, value string) {
@@ -927,7 +1028,12 @@ func (c *Context) setDimension(key, value string) {
 // dimensionIndex returns the index of key in c.dimensions, or -1. It
 // doesn't look at the defaults.
 func (c *Context) dimensionIndex(key string) int {
-	for i, d := range c.dimensions {
+	return dimensionIndex(c.dimensions, key)
+}
+
+// dimensionIndex returns the index of key in dimensions, or -1.
+func dimensionIndex(dimensions []dimensionValue, key string) int {
+	for i, d := range dimensions {
 		if d.key == key {
 			return i
 		}

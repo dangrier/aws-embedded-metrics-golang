@@ -1,0 +1,21 @@
+{
+  "Orders": 1,
+  "Service": "p",
+  "_aws": {
+    "CloudWatchMetrics": [
+      {
+        "Dimensions": [
+          []
+        ],
+        "Metrics": [
+          {
+            "Name": "Orders",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics"
+      }
+    ],
+    "Timestamp": "<<PRESENCE>>"
+  }
+}

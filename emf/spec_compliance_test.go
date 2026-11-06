@@ -227,6 +227,12 @@ func FuzzSpecCompliance(f *testing.F) {
 	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(2))
 	f.Add("ns", "ServiceName", "v", "w", "m", 1, "f", 1.0, "None", "ServiceType", uint8(3), uint8(2))
 	f.Add("ns", "d", "v", "w", "ServiceName", 1, "ServiceType", 1.0, "None", "p", uint8(0), uint8(2))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(5), uint8(4))
+	f.Add("ns", "d", "v", "w", "d", 1, "f", 1.0, "None", "p", uint8(5), uint8(8))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "d", uint8(5), uint8(11))
+	f.Add("ns", "ServiceName", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(14))
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(12))
+	f.Add("ns", "d", "v", "v", "m", 1, "f", 1.0, "None", "p", uint8(3), uint8(13))
 	// Property keys and map keys with invalid UTF-8, which encoding/json
 	// writes as U+FFFD, so different keys could be written the same.
 	f.Add("ns", "d", "v", "\xfe", "m", 1, "f", 1.0, "None", "\xff", uint8(0), uint8(0))
@@ -238,7 +244,8 @@ func FuzzSpecCompliance(f *testing.F) {
 	f.Add("ns", "d", "{\"\xe2\x82\":1,\"\xff\":2}", "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
 
 	// The Lambda default dimensions are used unless mode%3 is 0, and merged
-	// into each dimension set if it is 2.
+	// into each dimension set if it is 2. mode/3%5 picks how dimensions are
+	// reset or replaced before the line is written.
 	f.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
 
 	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, otherValue, intName string, intValue int,
@@ -301,6 +308,29 @@ func FuzzSpecCompliance(f *testing.F) {
 			other.Metric(fmt.Sprintf("other%d", i), i)
 		}
 		other.PutValues(floatName, values, append(opts, emf.Unit(emf.MetricUnit(unit)))...)
+
+		// Reset or replace dimensions, then use the removed names again. Only
+		// keys from the input are used, so the checked property can't clash.
+		useDefault := mode%2 == 0
+		switch mode / 3 % 5 {
+		case 1:
+			logger.ResetDimensions(useDefault).Dimension(propKey, otherValue)
+		case 2:
+			// A removed dimension name may become a metric or property.
+			logger.ResetDimensions(useDefault).Metric(dimKey, intValue).Property(dimKey, "p")
+			ctx.ResetDimensions(!useDefault)
+			other.ResetDimensions(useDefault)
+			logger.PropertyValue(dimKey, fuzzPropertyValue(extraMetrics, intValue, floatValue, dimValue))
+		case 3:
+			logger.SetDimensions(useDefault,
+				[]emf.Dimension{emf.NewDimension(dimKey, otherValue)},
+				[]emf.Dimension{emf.NewDimension(propKey, dimValue), emf.NewDimension(dimKey, dimValue)},
+				[]emf.Dimension{emf.NewDimension(dimKey, otherValue)})
+			other.SetDimensions(!useDefault)
+		case 4:
+			ctx.SetDimensions(useDefault, []emf.Dimension{emf.NewDimension(dimKey, otherValue)}).Metric(intName, intValue)
+			other.SetDimensions(useDefault, nil, []emf.Dimension{emf.NewDimension(floatName, dimValue)})
+		}
 		logger.Log()
 
 		if buf.Len() == 0 {

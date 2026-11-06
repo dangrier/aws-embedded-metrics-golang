@@ -1,0 +1,21 @@
+{
+  "Region": "eu",
+  "Requests": 1,
+  "_aws": {
+    "CloudWatchMetrics": [
+      {
+        "Dimensions": [
+          []
+        ],
+        "Metrics": [
+          {
+            "Name": "Requests",
+            "Unit": "None"
+          }
+        ],
+        "Namespace": "aws-embedded-metrics"
+      }
+    ],
+    "Timestamp": "<<PRESENCE>>"
+  }
+}

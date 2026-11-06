@@ -1,0 +1,64 @@
+[
+  {
+    "Declined": 1,
+    "Provider": "card",
+    "ServiceName": "some-func-name",
+    "ServiceType": "AWS::Lambda::Function",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType"
+            ],
+            [
+              "Provider"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Declined",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        }
+      ],
+      "Timestamp": "<<PRESENCE>>"
+    },
+    "executionEnvironment": "golang",
+    "functionVersion": "1",
+    "logStreamId": "log/stream",
+    "memorySize": "128"
+  },
+  {
+    "Provider": "paypal",
+    "Refunds": 2,
+    "ServiceName": "some-func-name",
+    "ServiceType": "AWS::Lambda::Function",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Provider"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Refunds",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "other"
+        }
+      ],
+      "Timestamp": "<<PRESENCE>>"
+    },
+    "executionEnvironment": "golang",
+    "functionVersion": "1",
+    "logStreamId": "log/stream",
+    "memorySize": "128"
+  }
+]

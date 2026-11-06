@@ -153,10 +153,16 @@ func (r *registry) definition(name string) (MetricDefinition, bool) {
 }
 
 // isDimension reports whether any of the logger's contexts has a dimension
-// with the given key.
+// with the given key, or the key is one of the logger's Lambda default
+// dimensions. The default keys stay reserved even in contexts that dropped
+// them with ResetDimensions(false) or SetDimensions(false, ...), so writing
+// the defaults again can't clash with a metric or property.
 func (r *registry) isDimension(key string) bool {
+	if d := r.logger.defaults; d != nil && slices.Contains(d.set, key) {
+		return true
+	}
 	for c := range r.logger.allContexts() {
-		if c.hasDimension(key) {
+		if c.dimensionIndex(key) >= 0 {
 			return true
 		}
 	}
