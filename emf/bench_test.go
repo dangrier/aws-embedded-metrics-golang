@@ -185,3 +185,22 @@ func BenchmarkLambdaContexts(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkPropertyValue measures PropertyValue, including encoding the
+// value and checking it for duplicate keys.
+func BenchmarkPropertyValue(b *testing.B) {
+	values := map[string]any{
+		"int":  503,
+		"list": []string{"beta", "eu"},
+		"map":  map[string]any{"id": "989ffbf8", "status": 503, "tags": []string{"a", "b"}, "nested": map[string]int{"x": 1, "y": 2}},
+	}
+	for _, name := range []string{"int", "list", "map"} {
+		b.Run(name, func(b *testing.B) {
+			logger := emf.New(emf.WithWriter(io.Discard), emf.WithoutDimensions())
+			b.ReportAllocs()
+			for b.Loop() {
+				logger.PropertyValue("p", values[name])
+			}
+		})
+	}
+}

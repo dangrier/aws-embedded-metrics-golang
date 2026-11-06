@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dangrier/aws-embedded-metrics-golang/emf"
 )
@@ -69,6 +70,8 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 		"missing _aws":             `{"m":1}`,
 		"trailing data":            aws(`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}`) + `{}`,
 		"empty line":               "\n",
+		"invalid UTF-8": `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[` +
+			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1,"p":"` + "\xff" + `"}`,
 		"metric too big": `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[` +
 			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1e200}`,
 		"timestamp too old": `{"_aws":{"Timestamp":1,"CloudWatchMetrics":[` +
@@ -85,6 +88,55 @@ func TestSpecValidatorRejectsInvalid(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSpecValidatorRejectsDuplicateKeys checks the validator reports an
+// object with a key more than once, at any depth, and only that, since
+// decoding into a map silently keeps the last value.
+func TestSpecValidatorRejectsDuplicateKeys(t *testing.T) {
+	now := time.UnixMilli(1574109732004)
+	line := func(members string) string {
+		return `{"_aws":{"Timestamp":1574109732004,"CloudWatchMetrics":[` +
+			`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1,` + members + `}`
+	}
+	tcs := map[string]struct {
+		doc  string
+		want []string
+	}{
+		"root":               {line(`"p":1,"p":2`), []string{`$ has the key "p" more than once`}},
+		"root with a metric": {line(`"m":2`), []string{`$ has the key "m" more than once`}},
+		"escaped key":        {line(`"p":1,"\u0070":2`), []string{`$ has the key "p" more than once`}},
+		// A line with invalid UTF-8 breaks the spec anyway, but the keys are
+		// still checked the way encoding/json reads them.
+		"invalid UTF-8": {line("\"\xff\":\"1\",\"\xfe\":\"2\""),
+			[]string{"not valid UTF-8", "$ has the key \"\uFFFD\" more than once"}},
+		"U+FFFD and invalid UTF-8": {line("\"\ufffd\":1,\"\xff\":2"),
+			[]string{"not valid UTF-8", "$ has the key \"\uFFFD\" more than once"}},
+		"escaped U+FFFD and U+FFFD": {line(`"\ufffd":1,"` + "\uFFFD" + `":2`), []string{"$ has the key \"\uFFFD\" more than once"}},
+		"nested object":             {line(`"p":{"a":{"b":1,"b":2}}`), []string{`$["p"]["a"] has the key "b" more than once`}},
+		"object in an array":        {line(`"p":[1,{"a":1},{"b":1,"b":2}]`), []string{`$["p"][2] has the key "b" more than once`}},
+		"in _aws": {
+			`{"_aws":{"Timestamp":1574109732004,"Timestamp":1574109732004,"CloudWatchMetrics":[` +
+				`{"Namespace":"ns","Dimensions":[[]],"Metrics":[{"Name":"m"}]}]},"m":1}`,
+			[]string{`$["_aws"] has the key "Timestamp" more than once`},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			v := specViolations([]byte(tc.doc), now)
+			if !slices.Equal(v, tc.want) {
+				t.Errorf("expected only %q, got %q for %s", tc.want, v, tc.doc)
+			}
+		})
+	}
+
+	t.Run("unique keys", func(t *testing.T) {
+		doc := line(`"p":{"a":1,"b":{"a":2}},"q":[{"a":1},{"a":2}],"caf\u00e9":1,"café":2`)
+		if v := specViolations([]byte(doc), now); !slices.Equal(v, []string{`$ has the key "café" more than once`}) {
+			t.Errorf("expected only the repeated key café, got %q", v)
+		}
+	})
 }
 
 // thirtyOneDimensions returns a document whose only violation is a dimension
@@ -175,6 +227,15 @@ func FuzzSpecCompliance(f *testing.F) {
 	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(2))
 	f.Add("ns", "ServiceName", "v", "w", "m", 1, "f", 1.0, "None", "ServiceType", uint8(3), uint8(2))
 	f.Add("ns", "d", "v", "w", "ServiceName", 1, "ServiceType", 1.0, "None", "p", uint8(0), uint8(2))
+	// Property keys and map keys with invalid UTF-8, which encoding/json
+	// writes as U+FFFD, so different keys could be written the same.
+	f.Add("ns", "d", "v", "\xfe", "m", 1, "f", 1.0, "None", "\xff", uint8(0), uint8(0))
+	f.Add("ns", "d", "\xff", "\uFFFD", "m", 1, "f", 1.0, "None", "\xfe", uint8(5), uint8(0))
+	f.Add("ns", "d", "\xff", "w", "m", 1, "f", 1.0, "None", "p", uint8(8), uint8(0))
+	f.Add("ns", "d", "\xffa\xfe", "w", "m", 1, "f", 1.0, "None", "p", uint8(18), uint8(0))
+	// A json.RawMessage that repeats a key, or isn't valid UTF-8.
+	f.Add("ns", "d", `{"a":1,"a":2}`, "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
+	f.Add("ns", "d", "{\"\xe2\x82\":1,\"\xff\":2}", "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
 
 	// The Lambda default dimensions are used unless mode%3 is 0, and merged
 	// into each dimension set if it is 2.
@@ -269,10 +330,23 @@ const fuzzCheckedKey = "fuzzChecked"
 
 // assertPropertyValue checks a property set with PropertyValue and not
 // replaced is written on every line as the value encoded as JSON, or, if
-// the value can't be encoded, isn't written and is reported.
+// the value can't be encoded, isn't valid UTF-8 or has an object with a
+// key more than once, isn't written and is reported.
 func assertPropertyValue(t *testing.T, out []byte, errs []error, key string, value any) {
 	t.Helper()
 	want, encodeErr := json.Marshal(value)
+	if encodeErr == nil && !utf8.Valid(want) {
+		encodeErr = errors.New("not valid UTF-8")
+	}
+	if encodeErr == nil {
+		// A value with an object that has a key more than once is skipped.
+		var dups []string
+		checkDuplicateKeys(func(format string, a ...any) { dups = append(dups, fmt.Sprintf(format, a...)) },
+			json.NewDecoder(bytes.NewReader(want)), "$")
+		if len(dups) > 0 {
+			encodeErr = errors.New(strings.Join(dups, "; "))
+		}
+	}
 	for line := range bytes.Lines(out) {
 		var members map[string]json.RawMessage
 		if err := json.Unmarshal(line, &members); err != nil {
@@ -296,11 +370,12 @@ func assertPropertyValue(t *testing.T, out []byte, errs []error, key string, val
 }
 
 // fuzzPropertyValue returns a property value of a type picked by kind,
-// made from the fuzzer's input. A float may be NaN or infinite, and a
-// json.Marshaler or json.RawMessage may not be valid JSON, which
-// PropertyValue skips and reports.
+// made from the fuzzer's input. A float may be NaN or infinite, a
+// json.Marshaler or json.RawMessage may not be valid JSON or may have a key
+// more than once, and a nested map may have keys that are written the same,
+// all of which PropertyValue skips and reports.
 func fuzzPropertyValue(kind uint8, i int, f float64, s string) any {
-	switch kind % 9 {
+	switch kind % 10 {
 	case 0:
 		return i
 	case 1:
@@ -317,6 +392,10 @@ func fuzzPropertyValue(kind uint8, i int, f float64, s string) any {
 		return fuzzMarshaler(s) // may not be valid JSON
 	case 7:
 		return json.RawMessage(s) // may not be valid JSON
+	case 8:
+		// The keys are written the same if s has invalid UTF-8 and each
+		// run of invalid bytes is one byte long.
+		return []any{map[string]any{s: i, strings.ToValidUTF8(s, "\uFFFD"): s}}
 	default:
 		return s + "\xff<&>" // invalid UTF-8, and characters JSON escapes
 	}
@@ -358,6 +437,15 @@ func TestErrorHandler(t *testing.T) {
 		"blank namespace":         func(l *emf.Logger) { l.Namespace(" ") },
 		"property named a metric": func(l *emf.Logger) { l.Metric("dup", 1).Property("dup", "v") },
 		"reserved property":       func(l *emf.Logger) { l.Property("_aws", "v") },
+		"property key with invalid UTF-8": func(l *emf.Logger) {
+			l.Property("\xff", "1")
+		},
+		"property value key with invalid UTF-8": func(l *emf.Logger) {
+			l.PropertyValue("a\xfeb", 1)
+		},
+		"property value with invalid UTF-8 map keys": func(l *emf.Logger) {
+			l.PropertyValue("p", map[string]int{"\xff": 1, "\xfe": 2})
+		},
 		"property value named a metric": func(l *emf.Logger) {
 			l.Metric("dup", 1).PropertyValue("dup", 2)
 		},
