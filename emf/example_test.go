@@ -237,3 +237,47 @@ func ExampleContext_ResetDimensions() {
 	// Output:
 	// {"Invoices":1,"Orders":1,"ServiceName":"checkout-fn","ServiceType":"AWS::Lambda::Function","_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"shop","Dimensions":[["ServiceName","ServiceType"]],"Metrics":[{"Name":"Orders","Unit":"Count"}]},{"Namespace":"billing","Dimensions":[[]],"Metrics":[{"Name":"Invoices","Unit":"Count"}]}]},"executionEnvironment":"AWS_Lambda_provided.al2023","functionVersion":"$LATEST","logStreamId":"2026/11/03/[$LATEST]abc123","memorySize":"128"}
 }
+
+// Flush writes the metrics, then clears the values and properties, so one
+// logger can be reused for each unit of work, such as each Lambda
+// invocation. The namespace and dimensions are kept. Each flush writes the
+// time it is called, unless a timestamp was set, as it is here so the
+// output stays the same.
+func ExampleLogger_Flush() {
+	logger := emf.New(exampleTime).Namespace("api").Dimension("Operation", "GetItem")
+
+	handle := func(requestID string) {
+		defer logger.Flush()
+		logger.Property("requestId", requestID).MetricAs("Requests", 1, emf.Count)
+	}
+	handle("request-1")
+	handle("request-2")
+	// Output:
+	// {"Operation":"GetItem","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Operation"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]}]},"requestId":"request-1"}
+	// {"Operation":"GetItem","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Operation"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]}]},"requestId":"request-2"}
+}
+
+// SetTimestamp records metrics for another time, such as when an event
+// happened rather than when it was processed. The timestamp is kept across
+// flushes, until it is set again.
+func ExampleLogger_SetTimestamp() {
+	logger := emf.New().Namespace("queue")
+	for _, sent := range []time.Time{time.UnixMilli(1791500000000), time.UnixMilli(1791500060000)} {
+		logger.SetTimestamp(sent).MetricAs("Messages", 1, emf.Count).Flush()
+	}
+	// Output:
+	// {"Messages":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"queue","Dimensions":[[]],"Metrics":[{"Name":"Messages","Unit":"Count"}]}]}}
+	// {"Messages":1,"_aws":{"Timestamp":1791500060000,"CloudWatchMetrics":[{"Namespace":"queue","Dimensions":[[]],"Metrics":[{"Name":"Messages","Unit":"Count"}]}]}}
+}
+
+// With WithResetDimensionsOnFlush, each Flush also removes the dimensions
+// you added, so each unit of work adds its own.
+func ExampleWithResetDimensionsOnFlush() {
+	logger := emf.New(exampleTime, emf.WithResetDimensionsOnFlush()).Namespace("api")
+
+	logger.Dimension("Customer", "acme").MetricAs("Requests", 1, emf.Count).Flush()
+	logger.MetricAs("Requests", 1, emf.Count).Flush()
+	// Output:
+	// {"Customer":"acme","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Customer"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]}]}}
+	// {"Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[[]],"Metrics":[{"Name":"Requests","Unit":"Count"}]}]}}
+}
