@@ -597,3 +597,45 @@ func TestFlushReadsTraceID(t *testing.T) {
 		}
 	}
 }
+
+// TestFlushKeepsDefaultDimensions pins down a choice from #32: without
+// WithResetDimensionsOnFlush, Flush keeps the default context's dimensions,
+// as the official Node.js library does. So a handler on a reused logger that
+// sets a dimension on only some calls writes the value from an earlier call
+// on the others. This test records that it happens, so changing it is a
+// deliberate choice, and checks WithResetDimensionsOnFlush prevents it.
+func TestFlushKeepsDefaultDimensions(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reset %v", reset), func(t *testing.T) {
+			var buf bytes.Buffer
+			opts := []emf.LoggerOption{emf.WithWriter(&buf), emf.WithoutDimensions()}
+			if reset {
+				opts = append(opts, emf.WithResetDimensionsOnFlush())
+			}
+			logger := emf.New(opts...)
+
+			// Only signed-in customers set the dimension.
+			handle := func(customer string) {
+				defer logger.Flush()
+				if customer != "" {
+					logger.Dimension("Customer", customer)
+				}
+				logger.Metric("Requests", 1)
+			}
+			handle("acme")
+			handle("")
+
+			lines := flushedLines(t, buf.Bytes())
+			if len(lines) != 2 {
+				t.Fatalf("expected 2 lines, got %d", len(lines))
+			}
+			got, ok := lines[1].doc["Customer"]
+			switch {
+			case !reset && got != "acme":
+				t.Errorf("expected the kept dimension Customer acme on the second line, got %v", got)
+			case reset && ok:
+				t.Errorf("expected no Customer on the second line with WithResetDimensionsOnFlush, got %v", got)
+			}
+		})
+	}
+}

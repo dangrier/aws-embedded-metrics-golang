@@ -435,6 +435,18 @@ func FuzzSpecCompliance(f *testing.F) {
 			if _, ok := members[fuzzCheckedKey]; ok && !checkedKeyUsed {
 				t.Errorf("property %q from before the flush written again: %s", fuzzCheckedKey, line)
 			}
+			// With WithResetDimensionsOnFlush, nothing from the first unit is
+			// kept: not a dimension of any context, a property or a metric.
+			// So the line may only hold the new metric and the Lambda
+			// defaults, and any value that leaked across the flush shows up
+			// as another member, whatever the fuzzer picked.
+			if write == writeFlushReset {
+				for key := range members {
+					if key != "_aws" && key != fuzzFlushedName && !slices.Contains(lambdaDefaultKeys, key) {
+						t.Errorf("member %q from before the flush written again: %s", key, line)
+					}
+				}
+			}
 		}
 	})
 }
@@ -449,6 +461,13 @@ func fuzzMembers(t *testing.T, line []byte) map[string]json.RawMessage {
 		t.Fatal(err)
 	}
 	return members
+}
+
+// lambdaDefaultKeys are the members New adds in Lambda: the default
+// dimensions and properties, and traceId.
+var lambdaDefaultKeys = []string{
+	"ServiceName", "ServiceType",
+	"executionEnvironment", "memorySize", "functionVersion", "logStreamId", "traceId",
 }
 
 // fuzzFlushedName is the metric FuzzSpecCompliance adds after a flush.
