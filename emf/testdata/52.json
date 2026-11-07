@@ -1,0 +1,82 @@
+[
+  {
+    "Declined": 1,
+    "Provider": "card",
+    "Shared": [
+      1,
+      2
+    ],
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Provider"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Declined",
+              "Unit": "None"
+            },
+            {
+              "Name": "Shared",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    }
+  },
+  {
+    "Provider": "paypal",
+    "Shared": [
+      1,
+      2
+    ],
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Provider"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Shared",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "payments"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    }
+  },
+  {
+    "Provider": "paypal",
+    "Refunds": 3,
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Provider"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Refunds",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "payments"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    }
+  }
+]

@@ -242,10 +242,24 @@ func FuzzSpecCompliance(f *testing.F) {
 	// A json.RawMessage that repeats a key, or isn't valid UTF-8.
 	f.Add("ns", "d", `{"a":1,"a":2}`, "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
 	f.Add("ns", "d", "{\"\xe2\x82\":1,\"\xff\":2}", "w", "m", 1, "f", 1.0, "None", "p", uint8(7), uint8(0))
+	// Flush, SetTimestamp in and out of CloudWatch's window, and
+	// WithResetDimensionsOnFlush, with a metric name reused as a dimension.
+	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(15))
+	f.Add("ns", "d", "v", "w", "m", 3600000, "f", 1.0, "None", "p", uint8(150), uint8(30))
+	f.Add("ns", "d", "v", "w", "m", 1300000000, "f", 1.0, "None", "p", uint8(5), uint8(32))
+	f.Add("ns", "ServiceName", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(47))
+	f.Add("ns", "fuzzFlushed", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(3), uint8(51))
+	f.Add("ns", "d", "v", "w", "fuzzFlushed", 1, "f", 1.0, "None", "fuzzChecked", uint8(150), uint8(57))
+	// A property key that matches _aws without regard to case.
+	f.Add("0", "0", "0", "0", "0", 59, "0", 1.0, "0", "_awS", uint8(4), uint8('c'))
 
 	// The Lambda default dimensions are used unless mode%3 is 0, and merged
 	// into each dimension set if it is 2. mode/3%5 picks how dimensions are
-	// reset or replaced before the line is written.
+	// reset or replaced before the line is written. mode/15%4 picks how the
+	// line is written: with Log, Flush, Flush after SetTimestamp, or Flush
+	// with WithResetDimensionsOnFlush. Every Flush is followed by a second
+	// unit of work and Flush, which must write none of the first unit's
+	// values or properties.
 	f.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
 
 	f.Fuzz(func(t *testing.T, namespace, dimKey, dimValue, otherValue, intName string, intValue int,
@@ -260,6 +274,16 @@ func FuzzSpecCompliance(f *testing.F) {
 			loggerOpts = append(loggerOpts, emf.WithoutDimensions())
 		case 2:
 			loggerOpts = append(loggerOpts, emf.WithMergedDefaultDimensions())
+		}
+		const (
+			writeLog = iota
+			writeFlush
+			writeFlushSetTimestamp
+			writeFlushReset
+		)
+		write := mode / 15 % 4
+		if write == writeFlushReset {
+			loggerOpts = append(loggerOpts, emf.WithResetDimensionsOnFlush())
 		}
 		logger := emf.New(loggerOpts...)
 		// A property no other input may replace, unless the fuzzer picks
@@ -331,27 +355,131 @@ func FuzzSpecCompliance(f *testing.F) {
 			ctx.SetDimensions(useDefault, []emf.Dimension{emf.NewDimension(dimKey, otherValue)}).Metric(intName, intValue)
 			other.SetDimensions(useDefault, nil, []emf.Dimension{emf.NewDimension(floatName, dimValue)})
 		}
-		logger.Log()
+
+		// A timestamp from the input, up to 30 days in the past, so it may be
+		// outside CloudWatch's window. It is set after the values are added,
+		// and must still be written for them.
+		var timestamp time.Time
+		if write == writeFlushSetTimestamp {
+			timestamp = time.Now().Add(-time.Duration(uint64(intValue)%uint64(30*24*time.Hour/time.Millisecond)) * time.Millisecond)
+			logger.SetTimestamp(timestamp)
+		}
+		if write == writeLog {
+			logger.Log()
+		} else {
+			logger.Flush()
+		}
+		checkedKeyUsed := slices.Contains([]string{dimKey, otherValue, intName, floatName, propKey}, fuzzCheckedKey)
 
 		if buf.Len() == 0 {
 			// Both metrics were skipped, so they must have been reported.
 			if len(errs) < 2 {
 				t.Fatalf("no output, but only %d errors reported: %v", len(errs), errs)
 			}
-			return
-		}
-		for line := range bytes.Lines(buf.Bytes()) {
-			assertCompliant(t, line)
-		}
-		for _, err := range errs {
-			if !errors.Is(err, emf.ErrInvalid) {
-				t.Errorf("error %v does not wrap ErrInvalid", err)
+		} else {
+			assertFuzzLines(t, buf.Bytes(), errs, timestamp)
+			if !checkedKeyUsed {
+				assertPropertyValue(t, buf.Bytes(), errs, fuzzCheckedKey, checked)
 			}
 		}
-		if !slices.Contains([]string{dimKey, otherValue, intName, floatName, propKey}, fuzzCheckedKey) {
-			assertPropertyValue(t, buf.Bytes(), errs, fuzzCheckedKey, checked)
+		if write == writeLog {
+			return
+		}
+
+		// The next unit of work adds one metric. The flush must have cleared
+		// every other metric and property, in every context, so only this
+		// metric is written, with its one value, and the checked property
+		// isn't. Its name may be a dimension the flush kept, and then it is
+		// skipped and reported.
+		buf.Reset()
+		errs = nil
+		logger.Metric(fuzzFlushedName, 1).Flush()
+		if buf.Len() == 0 {
+			if len(errs) == 0 {
+				t.Fatal("no output after the second flush, and no errors reported")
+			}
+			return
+		}
+		assertFuzzLines(t, buf.Bytes(), errs, timestamp)
+		for line := range bytes.Lines(buf.Bytes()) {
+			members := fuzzMembers(t, line)
+			var aws struct {
+				CloudWatchMetrics []struct {
+					Metrics []struct{ Name string }
+				}
+			}
+			if err := json.Unmarshal(members["_aws"], &aws); err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range aws.CloudWatchMetrics {
+				for _, m := range d.Metrics {
+					if m.Name != fuzzFlushedName {
+						t.Errorf("metric %q from before the flush written again: %s", m.Name, line)
+					}
+				}
+			}
+			if got := string(members[fuzzFlushedName]); got != "1" {
+				t.Errorf("expected %s to be 1, got %s: %s", fuzzFlushedName, got, line)
+			}
+			if _, ok := members[fuzzCheckedKey]; ok && !checkedKeyUsed {
+				t.Errorf("property %q from before the flush written again: %s", fuzzCheckedKey, line)
+			}
 		}
 	})
+}
+
+// fuzzMembers returns the members of a log line by their exact key. A
+// struct can't be used, since encoding/json matches field names without
+// regard to case, so a property such as "_awS" would be read as "_aws".
+func fuzzMembers(t *testing.T, line []byte) map[string]json.RawMessage {
+	t.Helper()
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(line, &members); err != nil {
+		t.Fatal(err)
+	}
+	return members
+}
+
+// fuzzFlushedName is the metric FuzzSpecCompliance adds after a flush.
+const fuzzFlushedName = "fuzzFlushed"
+
+// assertFuzzLines checks each line is spec compliant, and every error wraps
+// ErrInvalid. If timestamp isn't zero, it was set with SetTimestamp, so each
+// line must have it, and if it is outside CloudWatch's window, that must be
+// reported, and is the only way a line may break the spec.
+func assertFuzzLines(t *testing.T, out []byte, errs []error, timestamp time.Time) {
+	t.Helper()
+	// The logger checked the window a moment ago, so a timestamp within a
+	// minute of its edge may be reported or not.
+	now := time.Now()
+	edge := now.Add(-maxTimestampPast)
+	outside := !timestamp.IsZero() && timestamp.Before(edge.Add(-time.Minute))
+	nearEdge := !timestamp.IsZero() && !outside && timestamp.Before(edge.Add(time.Minute))
+	for line := range bytes.Lines(out) {
+		for _, v := range specViolations(line, now) {
+			if (!outside && !nearEdge) || !strings.HasPrefix(v, "Timestamp ") {
+				t.Errorf("not spec compliant: %s\noutput: %s", v, line)
+			}
+		}
+		if timestamp.IsZero() {
+			continue
+		}
+		var aws struct{ Timestamp int64 }
+		if err := json.Unmarshal(fuzzMembers(t, line)["_aws"], &aws); err != nil {
+			t.Fatal(err)
+		}
+		if aws.Timestamp != timestamp.UnixMilli() {
+			t.Errorf("expected timestamp %d, got %d", timestamp.UnixMilli(), aws.Timestamp)
+		}
+	}
+	for _, err := range errs {
+		if !errors.Is(err, emf.ErrInvalid) {
+			t.Errorf("error %v does not wrap ErrInvalid", err)
+		}
+	}
+	if outside && !slices.ContainsFunc(errs, func(err error) bool { return strings.Contains(err.Error(), "timestamp") }) {
+		t.Errorf("timestamp %v outside CloudWatch's window not reported: %v", timestamp, errs)
+	}
 }
 
 // fuzzCheckedKey is the key of the property FuzzSpecCompliance checks is

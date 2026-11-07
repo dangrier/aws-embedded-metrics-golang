@@ -1,0 +1,97 @@
+[
+  {
+    "Invoices": 1,
+    "Orders": 1,
+    "Plan": "pro",
+    "Region": "au",
+    "ServiceName": "some-func-name",
+    "ServiceType": "AWS::Lambda::Function",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType"
+            ],
+            [
+              "Region"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Orders",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        },
+        {
+          "Dimensions": [
+            [
+              "Plan"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Invoices",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "billing"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    },
+    "executionEnvironment": "golang",
+    "functionVersion": "1",
+    "logStreamId": "log/stream",
+    "memorySize": "128"
+  },
+  {
+    "Invoices": 2,
+    "Orders": 2,
+    "ServiceName": "some-func-name",
+    "ServiceType": "AWS::Lambda::Function",
+    "Stage": "beta",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType"
+            ],
+            [
+              "Stage"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Orders",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        },
+        {
+          "Dimensions": [
+            []
+          ],
+          "Metrics": [
+            {
+              "Name": "Invoices",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "billing"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    },
+    "executionEnvironment": "golang",
+    "functionVersion": "1",
+    "logStreamId": "log/stream",
+    "memorySize": "128"
+  }
+]

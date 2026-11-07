@@ -703,6 +703,89 @@ var emfTestCases = []emfTestCase{
 		},
 		expected: "testdata/47.json",
 	},
+	{
+		name: "flush clears values and properties, and keeps the namespace and dimensions",
+		given: func(logger *emf.Logger) {
+			logger.Namespace("api").Dimension("Operation", "Get").
+				Property("requestId", "a").PropertyValue("statusCode", 200).
+				Metric("Requests", 1).Put("Latency", 12.5).Put("Latency", 8)
+			logger.Flush()
+			logger.Property("requestId", "b").Metric("Requests", 1).Put("Latency", 9)
+			logger.Flush()
+		},
+		expected: "testdata/48.json",
+	},
+	{
+		name: "flush in Lambda writes the Lambda properties and dimensions on every line",
+		env:  lambdaEnv,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").MetricAs("memorySize", 256, emf.Megabytes)
+			logger.Flush()
+			logger.Metric("Orders", 1)
+			logger.Flush()
+		},
+		expected: "testdata/49.json",
+	},
+	{
+		name: "flush with merged Lambda defaults",
+		env:  lambdaEnv,
+		new:  newMerged,
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Service", "checkout").Metric("Orders", 1)
+			logger.NewContext().Namespace("other").Metric("Refunds", 1)
+			logger.Flush()
+			logger.Metric("Orders", 2)
+			logger.Flush()
+		},
+		expected: "testdata/50.json",
+	},
+	{
+		name: "flush resets dimensions with WithResetDimensionsOnFlush",
+		env:  lambdaEnv,
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithResetDimensionsOnFlush(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Region", "au").Metric("Orders", 1)
+			billing := logger.NewContext().Namespace("billing").
+				SetDimensions(false, []emf.Dimension{emf.NewDimension("Plan", "pro")}).
+				Metric("Invoices", 1)
+			logger.Flush()
+			logger.Dimension("Stage", "beta").Metric("Orders", 2)
+			billing.Metric("Invoices", 2)
+			logger.Flush()
+		},
+		expected: "testdata/51.json",
+	},
+	{
+		name: "flush clears every context, and keeps contexts that disagree apart",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Dimension("Provider", "card").Metric("Declined", 1).Metric("Shared", 1)
+			payments := logger.NewContext().Namespace("payments").Dimension("Provider", "paypal").Metric("Shared", 2)
+			logger.Flush()
+			payments.Metric("Refunds", 3)
+			logger.Flush()
+		},
+		expected: "testdata/52.json",
+	},
+	{
+		name: "metric names, units and replaced properties start again after a flush",
+		new: func(buf *bytes.Buffer) *emf.Logger {
+			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
+		},
+		given: func(logger *emf.Logger) {
+			logger.Metric("Region", 1).MetricAs("Latency", 5, emf.Milliseconds).
+				Property("Orders", "p").Metric("Orders", 1)
+			logger.Flush()
+			logger.Dimension("Region", "au").Property("Latency", "slow").
+				MetricAs("Orders", 2, emf.Count)
+			logger.Flush()
+		},
+		expected: "testdata/53.json",
+	},
 }
 
 // lambdaEnv is the environment of a Lambda function.
