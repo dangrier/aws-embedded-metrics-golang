@@ -47,6 +47,20 @@ type Context struct {
 	// as each set is added, so Log doesn't build them again.
 	written  []DimensionSet
 	registry *registry
+	removed  bool // set by the Flush that removed the context from its logger
+}
+
+// do runs fn while holding the registry lock, unless a Flush removed c from
+// its logger. Then fn doesn't run, and the use is reported, since c's values
+// would never be written.
+func (c *Context) do(fn func()) {
+	c.registry.do(func() {
+		if c.removed {
+			c.registry.invalid("skipped: the context was removed by Flush, so make a new one with NewContext")
+			return
+		}
+		fn()
+	})
 }
 
 // defaultDimensions are the Lambda default dimensions, shared by the
@@ -122,13 +136,14 @@ func WithTimestamp(t time.Time) LoggerOption {
 }
 
 // WithResetDimensionsOnFlush makes each Flush remove the dimensions you
-// added to the default context and to every other context, as
-// ResetDimensions does, so the next unit of work starts without them. Each
-// context keeps its namespace, and its choice about the Lambda default
-// dimensions: a context that dropped them with ResetDimensions(false) or
-// SetDimensions(false, ...) doesn't get them back. Dimensions set with
-// SetDimensions are removed too. Without this option, Flush keeps every
-// dimension. Log never removes dimensions.
+// added to the default context, as ResetDimensions does, so the next unit of
+// work starts without them. Dimensions set with SetDimensions are removed
+// too. The default context keeps its namespace, and its choice about the
+// Lambda default dimensions: if it dropped them with ResetDimensions(false)
+// or SetDimensions(false, ...), it doesn't get them back. Without this
+// option, Flush keeps the default context's dimensions. Either way, Flush
+// removes the contexts made with NewContext, and with them their dimensions.
+// Log never removes dimensions.
 func WithResetDimensionsOnFlush() LoggerOption {
 	return func(l *Logger) {
 		l.resetOnFlush = true
@@ -479,19 +494,25 @@ func (l *Logger) Log() {
 	l.write(events)
 }
 
-// Flush writes the lines Log would, then clears every metric value, in the
-// default context and every other context, and every property set with
-// Property or PropertyValue, so the logger can be reused for the next unit of
-// work, such as the next Lambda invocation. Nothing is written twice, and a
-// metric name can be used again with any unit, or as a dimension or
-// property, without being reported.
+// Flush writes the lines Log would, then clears every metric value and
+// every property set with Property or PropertyValue, and removes every
+// context made with NewContext, so the logger can be reused for the next
+// unit of work, such as the next Lambda invocation. A value written by one
+// Flush isn't written by a later one, and a metric name can be used again
+// with any unit, or as a dimension or property, without being reported.
+// Log doesn't clear anything, so on a reused logger, call only Flush: a Log
+// before a Flush writes the same values again.
 //
-// Flush keeps:
-//   - the namespace and the contexts made with NewContext, with their
-//     namespaces
+// A removed context's dimensions aren't written again, and its keys are free
+// for other uses. A Context kept after a Flush removed it does nothing, and
+// each use is reported to the error handler, so make a new one with
+// NewContext for each unit of work.
+//
+// For the default context, Flush keeps:
+//   - the namespace
 //   - the dimensions, unless the logger was made with
 //     WithResetDimensionsOnFlush
-//   - each context's choice about the Lambda default dimensions
+//   - its choice about the Lambda default dimensions
 //   - the Lambda properties New added, which are written on every line.
 //     Lambda sets the trace header for each invocation, so traceId is read
 //     again by each Flush, and is written only if the trace is sampled
@@ -499,7 +520,9 @@ func (l *Logger) Log() {
 //
 // Without a timestamp set that way, each Flush writes the time it is called,
 // not the time of New, so a logger kept for a long time doesn't write an old
-// timestamp. Log still writes the time of New.
+// timestamp. Log still writes the time of New. SetTimestamp with the zero
+// time.Time isn't special: it sets that time, and doesn't go back to the
+// time of each Flush.
 //
 // With no metrics, Flush writes nothing, as Log does, but still clears the
 // properties, and the dimensions with WithResetDimensionsOnFlush. Values and
@@ -538,12 +561,14 @@ func (l *Logger) SetTimestamp(t time.Time) *Logger {
 // metric slices are replaced, not truncated, so a snapshot taken before
 // stays valid.
 func (l *Logger) clear() {
-	for c := range l.allContexts() {
-		c.metricDirective.Metrics = nil
-		if l.resetOnFlush {
-			c.resetOwnDimensions()
-		}
+	l.defaultContext.metricDirective.Metrics = nil
+	if l.resetOnFlush {
+		l.defaultContext.resetOwnDimensions()
 	}
+	for _, c := range l.contexts {
+		c.removed = true
+	}
+	l.contexts = nil
 	clear(l.properties)
 	clear(l.registry.metrics)
 	clear(l.registry.more)
@@ -840,7 +865,9 @@ func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims 
 // namespace, dimension sets and dimension values, and shares the logger's
 // properties. Contexts are written on the same line, unless they set the
 // same dimension key to different values. Then they are written on separate
-// lines, so each context's metrics keep their own value.
+// lines, so each context's metrics keep their own value. Flush removes the
+// context from the logger, after writing its metrics, so on a reused logger,
+// make the contexts for each unit of work after the last Flush.
 func (l *Logger) NewContext() *Context {
 	var c Context
 	l.registry.do(func() {
@@ -852,7 +879,7 @@ func (l *Logger) NewContext() *Context {
 
 // Namespace sets namespace on given context.
 func (c *Context) Namespace(namespace string) *Context {
-	c.registry.do(func() { c.namespace(namespace) })
+	c.do(func() { c.namespace(namespace) })
 	return c
 }
 
@@ -871,7 +898,7 @@ func (c *Context) Dimension(key, value string) *Context {
 // most 30 keys including ServiceName and ServiceType, unless the context
 // dropped the defaults.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
-	c.registry.do(func() { c.dimensionSet(dimensions) })
+	c.do(func() { c.dimensionSet(dimensions) })
 	return c
 }
 
@@ -897,7 +924,7 @@ func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
 // replaces a property is reported again, since the property was no longer
 // replaced in between.
 func (c *Context) ResetDimensions(useDefault bool) *Context {
-	c.registry.do(func() { c.resetDimensions(useDefault) })
+	c.do(func() { c.resetDimensions(useDefault) })
 	return c
 }
 
@@ -916,7 +943,7 @@ func (c *Context) ResetDimensions(useDefault bool) *Context {
 // the same as ResetDimensions(useDefault). See ResetDimensions for what
 // happens to keys that aren't set again.
 func (c *Context) SetDimensions(useDefault bool, sets ...[]Dimension) *Context {
-	c.registry.do(func() { c.setDimensions(useDefault, sets) })
+	c.do(func() { c.setDimensions(useDefault, sets) })
 	return c
 }
 
@@ -932,13 +959,13 @@ func (c *Context) MetricFloat(name string, value float64) *Context {
 
 // MetricAs puts int metric with MetricUnit on given context.
 func (c *Context) MetricAs(name string, value int, unit MetricUnit) *Context {
-	c.registry.do(func() { c.put(name, value, unit, standardResolution) })
+	c.do(func() { c.put(name, value, unit, standardResolution) })
 	return c
 }
 
 // MetricFloatAs puts float metric with MetricUnit on given context.
 func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Context {
-	c.registry.do(func() { c.put(name, value, unit, standardResolution) })
+	c.do(func() { c.put(name, value, unit, standardResolution) })
 	return c
 }
 
@@ -970,9 +997,9 @@ func (c *Context) resetDimensions(useDefault bool) {
 // resetOwnDimensions removes the dimension sets and values added to c, and
 // keeps c's choice about the default dimensions: a context that dropped them
 // with ResetDimensions(false) or SetDimensions(false, ...) doesn't get them
-// back. With WithResetDimensionsOnFlush, Flush calls it on each context while
-// holding the registry lock, so the next unit of work starts without the last
-// one's dimensions.
+// back. With WithResetDimensionsOnFlush, Flush calls it on the default
+// context while holding the registry lock, so the next unit of work starts
+// without the last one's dimensions.
 func (c *Context) resetOwnDimensions() {
 	c.resetDimensions(c.defaults != nil)
 }

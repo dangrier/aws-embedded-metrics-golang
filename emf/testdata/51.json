@@ -11,10 +11,6 @@
         {
           "Dimensions": [
             [
-              "ServiceName",
-              "ServiceType"
-            ],
-            [
               "Region"
             ]
           ],
@@ -28,6 +24,10 @@
         },
         {
           "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType"
+            ],
             [
               "Plan"
             ]
@@ -59,10 +59,6 @@
         {
           "Dimensions": [
             [
-              "ServiceName",
-              "ServiceType"
-            ],
-            [
               "Stage"
             ]
           ],
@@ -76,7 +72,10 @@
         },
         {
           "Dimensions": [
-            []
+            [
+              "ServiceName",
+              "ServiceType"
+            ]
           ],
           "Metrics": [
             {

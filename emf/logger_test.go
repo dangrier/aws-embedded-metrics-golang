@@ -746,27 +746,27 @@ var emfTestCases = []emfTestCase{
 			return emf.New(emf.WithResetDimensionsOnFlush(), emf.WithWriter(buf))
 		},
 		given: func(logger *emf.Logger) {
-			logger.Dimension("Region", "au").Metric("Orders", 1)
-			billing := logger.NewContext().Namespace("billing").
-				SetDimensions(false, []emf.Dimension{emf.NewDimension("Plan", "pro")}).
-				Metric("Invoices", 1)
+			logger.SetDimensions(false, []emf.Dimension{emf.NewDimension("Region", "au")}).Metric("Orders", 1)
+			logger.NewContext().Namespace("billing").Dimension("Plan", "pro").Metric("Invoices", 1)
 			logger.Flush()
+			// The default context still has no Lambda defaults. The new
+			// context has them, and not the removed context's Plan.
 			logger.Dimension("Stage", "beta").Metric("Orders", 2)
-			billing.Metric("Invoices", 2)
+			logger.NewContext().Namespace("billing").Metric("Invoices", 2)
 			logger.Flush()
 		},
 		expected: "testdata/51.json",
 	},
 	{
-		name: "flush clears every context, and keeps contexts that disagree apart",
+		name: "flush removes contexts, and keeps contexts that disagree apart",
 		new: func(buf *bytes.Buffer) *emf.Logger {
 			return emf.New(emf.WithoutDimensions(), emf.WithWriter(buf))
 		},
 		given: func(logger *emf.Logger) {
 			logger.Dimension("Provider", "card").Metric("Declined", 1).Metric("Shared", 1)
-			payments := logger.NewContext().Namespace("payments").Dimension("Provider", "paypal").Metric("Shared", 2)
+			logger.NewContext().Namespace("payments").Dimension("Provider", "paypal").Metric("Shared", 2)
 			logger.Flush()
-			payments.Metric("Refunds", 3)
+			logger.NewContext().Namespace("payments").Dimension("Provider", "paypal").Metric("Refunds", 3)
 			logger.Flush()
 		},
 		expected: "testdata/52.json",

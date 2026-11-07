@@ -228,6 +228,8 @@ logger.NewContext().Namespace("payments").Dimension("Provider", "paypal").Metric
 logger.Log() // two lines: one with "Provider":"card", one with "Provider":"paypal"
 ```
 
+`Flush()` removes the contexts after writing them. See [Reusing a logger with Flush](#reusing-a-logger-with-flush).
+
 ### Logging with defer
 
 Create a new logger for each unit of work, such as a request or a batch, and call `Log()` once at
@@ -257,8 +259,8 @@ cold-start time. To share one logger, use `Flush()` instead.
 
 ### Reusing a logger with Flush
 
-`Flush()` writes the same lines as `Log()`, then clears the metric values and properties, so the
-logger is ready for the next unit of work. This is how the official AWS libraries' `flush()` works.
+`Flush()` writes the same lines as `Log()`, then clears the metric values and properties, and
+removes the contexts, so the logger is ready for the next unit of work. This is how the official AWS libraries' `flush()` works.
 In Lambda, create the logger once, and flush it at the end of each invocation:
 
 ```go
@@ -275,26 +277,37 @@ func handler(ctx context.Context, req Request) (Response, error) {
 
 Each invocation writes `"Requests":1`, never `[1,1]`. After a flush:
 
-- **Cleared:** metric values in every context, and properties set with `Property` or `PropertyValue`.
-  A metric name can be used again with another unit, or as a dimension or property, and a dimension
-  or metric isn't reported as replacing a property that was cleared.
-- **Kept:** the namespace, the contexts made with `NewContext` and their namespaces, the dimensions,
-  each context's choice about the Lambda default dimensions, and the Lambda properties, which are
-  written on every line. Lambda sets the X-Ray trace for each invocation, so each flush reads
-  `traceId` again.
+- **Cleared:** metric values, and properties set with `Property` or `PropertyValue`. A metric name
+  can be used again with another unit, or as a dimension or property, and a dimension or metric
+  isn't reported as replacing a property that was cleared.
+- **Removed:** the contexts made with `NewContext`, with their dimensions, so one invocation's
+  dimension values, such as a customer ID, are never written on the next one's lines. Make the
+  contexts for each unit of work after the last flush. A context kept after the flush that removed
+  it does nothing, and each use is reported to the error handler.
+- **Kept:** the namespace and dimensions of the logger's default context, its choice about the
+  Lambda default dimensions, and the Lambda properties, which are written on every line. Lambda
+  sets the X-Ray trace for each invocation, so each flush reads `traceId` again.
 - **Timestamp:** each flush writes the time it is called, so a logger kept for hours doesn't write
   an old time. A timestamp set with `WithTimestamp` or `SetTimestamp` is written instead, by every
   flush, until it is set again. `Log()` still writes the time of `New()`.
 
-`Flush()` with no metrics writes nothing, as `Log()` does, but still clears the properties. Values
-added from other goroutines while a flush runs are written by that flush or the next one, never
-both.
+`Flush()` with no metrics writes nothing, as `Log()` does, but still clears the properties and
+removes the contexts. Values added from other goroutines while a flush runs are written by that
+flush or the next one, never both.
 
-To also drop the dimensions you added after each flush, so each unit of work adds its own, use
-`WithResetDimensionsOnFlush()`. Each flush then works like `ResetDimensions` on every context,
-including dimensions set with `SetDimensions`, and keeps each context's choice about the Lambda
-default dimensions: a context that dropped them with `SetDimensions(false, ...)` or
-`ResetDimensions(false)` doesn't get them back.
+On a reused logger, call only `Flush()`. `Log()` clears nothing, so a value logged by `Log()` is
+written again by the next `Flush()`, and `Log()` still writes the time of `New()`.
+
+The pattern above assumes one invocation at a time in each process, which is how Lambda runs
+functions by default. If one process handles several requests at once, they share the logger: one
+request's `Flush()` writes the others' metrics and clears their properties. Then create a logger for
+each request instead.
+
+To also drop the dimensions you added to the logger itself after each flush, so each unit of work
+adds its own, use `WithResetDimensionsOnFlush()`. Each flush then works like `ResetDimensions` on
+the default context, including dimensions set with `SetDimensions`, and keeps its choice about the
+Lambda default dimensions: if it dropped them with `SetDimensions(false, ...)` or
+`ResetDimensions(false)`, it doesn't get them back.
 
 ```go
 metrics := emf.New(emf.WithResetDimensionsOnFlush()).Namespace("api")
@@ -316,7 +329,8 @@ metrics.SetTimestamp(event.Time).Metric("Messages", 1).Flush()
 ```
 
 A timestamp set either way applies to every line written afterwards, by `Log()` or `Flush()`, until
-it is set again. It is checked against [CloudWatch's window](#spec-compliance-and-errors) when a
+it is set again. There is no way back to the time of each flush, and the zero `time.Time` isn't
+special: it is written as that time, and reported as outside CloudWatch's window. It is checked against [CloudWatch's window](#spec-compliance-and-errors) when a
 line is written, not when it is set.
 
 ## Options

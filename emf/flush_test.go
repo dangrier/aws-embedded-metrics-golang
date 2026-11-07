@@ -308,74 +308,129 @@ func TestFlushProperties(t *testing.T) {
 	}
 }
 
-// TestFlushDimensions checks how Flush treats dimensions added with
-// Dimension and SetDimensions, with and without
-// WithResetDimensionsOnFlush, and that a context's choice about the Lambda
-// defaults is kept either way.
+// TestFlushDimensions checks how Flush treats the default context's
+// dimensions, added with Dimension or SetDimensions, with and without
+// WithResetDimensionsOnFlush. Its choice about the Lambda defaults is kept
+// either way, and with merged defaults too.
 func TestFlushDimensions(t *testing.T) {
 	for _, reset := range []bool{false, true} {
 		for _, merged := range []bool{false, true} {
-			t.Run(fmt.Sprintf("reset %v merged %v", reset, merged), func(t *testing.T) {
-				t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
-				var buf bytes.Buffer
-				opts := []emf.LoggerOption{emf.WithWriter(&buf)}
-				if reset {
-					opts = append(opts, emf.WithResetDimensionsOnFlush())
-				}
-				if merged {
-					opts = append(opts, emf.WithMergedDefaultDimensions())
-				}
-				logger := emf.New(opts...).Namespace("app")
-				logger.Dimension("Region", "au")
-				set := logger.NewContext().Namespace("set").
-					SetDimensions(false, []emf.Dimension{emf.NewDimension("Plan", "pro")})
-				kept := logger.NewContext().Namespace("kept").
-					SetDimensions(true, []emf.Dimension{emf.NewDimension("Tier", "gold")})
-
-				var units [2][]byte
-				for i := range units {
-					logger.Metric("Orders", 1)
-					set.Metric("Invoices", 1)
-					kept.Metric("Refunds", 1)
-					logger.Flush()
-					units[i] = bytes.Clone(buf.Bytes())
-					buf.Reset()
-					flushedLines(t, units[i])
-				}
-
-				defaults, region, plan, tier := `["ServiceName","ServiceType"]`, `["Region"]`, `["Plan"]`, `["Tier"]`
-				if merged {
-					region, tier = `["ServiceName","ServiceType","Region"]`, `["ServiceName","ServiceType","Tier"]`
-				}
-				first := []string{
-					`"Namespace":"app","Dimensions":[` + map[bool]string{false: defaults + ",", true: ""}[merged] + region + `]`,
-					`"Namespace":"set","Dimensions":[` + plan + `]`,
-					`"Namespace":"kept","Dimensions":[` + map[bool]string{false: defaults + ",", true: ""}[merged] + tier + `]`,
-				}
-				second := first
-				if reset {
-					second = []string{
-						`"Namespace":"app","Dimensions":[` + defaults + `]`,
-						`"Namespace":"set","Dimensions":[[]]`,
-						`"Namespace":"kept","Dimensions":[` + defaults + `]`,
+			for _, useDefault := range []bool{false, true} {
+				t.Run(fmt.Sprintf("reset %v merged %v useDefault %v", reset, merged, useDefault), func(t *testing.T) {
+					t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "fn")
+					var buf bytes.Buffer
+					opts := []emf.LoggerOption{emf.WithWriter(&buf)}
+					if reset {
+						opts = append(opts, emf.WithResetDimensionsOnFlush())
 					}
-				}
-				for i, want := range [2][]string{first, second} {
-					for _, w := range want {
-						if !bytes.Contains(units[i], []byte(w)) {
+					if merged {
+						opts = append(opts, emf.WithMergedDefaultDimensions())
+					}
+					logger := emf.New(opts...).
+						SetDimensions(useDefault, []emf.Dimension{emf.NewDimension("Plan", "pro")}).
+						Dimension("Region", "au")
+
+					var units [2][]byte
+					for i := range units {
+						logger.Metric("Orders", 1).Flush()
+						units[i] = bytes.Clone(buf.Bytes())
+						buf.Reset()
+						flushedLines(t, units[i])
+					}
+
+					defaults := `["ServiceName","ServiceType"]`
+					own := `["Plan"],["Region"]`
+					switch {
+					case useDefault && merged:
+						own = `["ServiceName","ServiceType","Plan"],["ServiceName","ServiceType","Region"]`
+					case useDefault:
+						own = defaults + "," + own
+					}
+					want := [2]string{own, own}
+					if reset {
+						want[1] = "[]"
+						if useDefault {
+							want[1] = defaults
+						}
+					}
+					for i, w := range want {
+						if w := `"Dimensions":[` + w + `]`; !bytes.Contains(units[i], []byte(w)) {
 							t.Errorf("flush %d: expected %s in %s", i+1, w, units[i])
 						}
 					}
-				}
-				if reset {
-					for _, key := range []string{"Region", "Plan", "Tier"} {
-						if bytes.Contains(units[1], []byte(`"`+key+`":`)) {
-							t.Errorf("expected %s to be removed by the flush: %s", key, units[1])
+					if reset {
+						for _, key := range []string{"Region", "Plan"} {
+							if bytes.Contains(units[1], []byte(`"`+key+`":`)) {
+								t.Errorf("expected %s to be removed by the flush: %s", key, units[1])
+							}
 						}
 					}
-				}
-			})
+				})
+			}
 		}
+	}
+}
+
+// TestFlushRemovesContexts checks Flush removes the contexts made with
+// NewContext, so a context made for one unit of work doesn't write its
+// dimension values on later lines or keep its keys reserved, and a Context
+// used after the Flush that removed it is reported and does nothing.
+func TestFlushRemovesContexts(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reset %v", reset), func(t *testing.T) {
+			var buf bytes.Buffer
+			var errs []error
+			opts := []emf.LoggerOption{emf.WithWriter(&buf), emf.WithoutDimensions(),
+				emf.WithErrorHandler(func(err error) { errs = append(errs, err) })}
+			if reset {
+				opts = append(opts, emf.WithResetDimensionsOnFlush())
+			}
+			logger := emf.New(opts...)
+			old := logger.NewContext().Namespace("orders").Dimension("Customer", "acme").Metric("Orders", 1)
+			// A context without metrics writes its dimension values too.
+			logger.NewContext().Dimension("Tenant", "t1")
+			logger.Flush()
+			if lines := flushedLines(t, buf.Bytes()); len(lines) != 1 || lines[0].doc["Customer"] != "acme" {
+				t.Fatalf("expected the first unit's line with Customer acme, got %s", buf.Bytes())
+			}
+
+			// The removed contexts' keys are free, and their values aren't
+			// written.
+			buf.Reset()
+			logger.Property("Customer", "note").Metric("Tenant", 1).Flush()
+			if len(errs) != 0 {
+				t.Fatalf("expected no errors, got %v", errs)
+			}
+			lines := flushedLines(t, buf.Bytes())
+			if len(lines) != 1 || lines[0].doc["Customer"] != "note" || lines[0].doc["Tenant"] != json.Number("1") {
+				t.Errorf("expected the removed contexts' values to be gone, got %s", buf.Bytes())
+			}
+
+			// Each use of a removed context is reported, and does nothing.
+			buf.Reset()
+			old.Namespace("x").Dimension("Customer", "beta").Metric("Orders", 2).
+				Put("Latency", 1).PutValues("Latency", []float64{1, 2}).
+				ResetDimensions(true).SetDimensions(true)
+			if len(errs) != 7 {
+				t.Errorf("expected 7 errors, got %d: %v", len(errs), errs)
+			}
+			for _, err := range errs {
+				if !errors.Is(err, emf.ErrInvalid) || !strings.Contains(err.Error(), "removed by Flush") {
+					t.Errorf("expected a removed context error that wraps ErrInvalid, got %v", err)
+				}
+			}
+			logger.Flush()
+			if buf.Len() != 0 {
+				t.Errorf("expected a removed context to write nothing, got %s", buf.Bytes())
+			}
+
+			// A context made after the flush works.
+			logger.NewContext().Namespace("orders").Metric("Orders", 3)
+			logger.Flush()
+			if lines := flushedLines(t, buf.Bytes()); len(lines) != 1 || lines[0].doc["Orders"] != json.Number("3") {
+				t.Errorf("expected a new context to be written, got %s", buf.Bytes())
+			}
+		})
 	}
 }
 
@@ -400,12 +455,24 @@ func TestFlushWriteError(t *testing.T) {
 }
 
 // TestConcurrentFlush adds values from many goroutines while others flush.
-// Every value must be written exactly once, across all the flushed lines,
-// including the values of a metric every context shares.
-// Run with -race (just test-race) to catch data races.
+// Each goroutine makes a context for each unit of work, as a handler on a
+// reused logger would. Every value must be written exactly once, across all
+// the flushed lines, including the values of a metric every context shares,
+// unless a Flush removed its context first, which is reported. Run with
+// -race (just test-race) to catch data races.
 func TestConcurrentFlush(t *testing.T) {
 	var out syncBuffer
-	logger := emf.New(emf.WithWriter(&out), emf.WithoutDimensions(), emf.WithResetDimensionsOnFlush())
+	var mu sync.Mutex
+	removed := 0
+	logger := emf.New(emf.WithWriter(&out), emf.WithoutDimensions(), emf.WithResetDimensionsOnFlush(),
+		emf.WithErrorHandler(func(err error) {
+			if !strings.Contains(err.Error(), "removed by Flush") {
+				t.Errorf("unexpected error: %v", err)
+			}
+			mu.Lock()
+			removed++
+			mu.Unlock()
+		}))
 
 	const (
 		goroutines = 8
@@ -414,14 +481,15 @@ func TestConcurrentFlush(t *testing.T) {
 	var wg sync.WaitGroup
 	for g := range goroutines {
 		wg.Go(func() {
-			ctx := logger.NewContext().Namespace(fmt.Sprintf("ns%d", g))
 			for i := range iterations {
 				logger.Metric("Requests", 1).
 					Property(fmt.Sprintf("g%d", g), "x").
 					Dimension("Worker", fmt.Sprintf("w%d", g))
 				// A key of its own, so the contexts never disagree and share
 				// every line.
-				ctx.Put("Latency", 1).Dimension(fmt.Sprintf("Worker%d", g), "w")
+				logger.NewContext().Namespace(fmt.Sprintf("ns%d", g)).
+					Dimension(fmt.Sprintf("Worker%d", g), "w").
+					Put("Latency", 1)
 				if i%7 == 0 {
 					logger.Flush()
 				}
@@ -445,10 +513,16 @@ func TestConcurrentFlush(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"Requests", "Latency"} {
-		if want := goroutines * iterations; total[name] != want {
-			t.Errorf("expected %d %s values, got %d", want, name, total[name])
-		}
+	want := goroutines * iterations
+	if total["Requests"] != want {
+		t.Errorf("expected %d Requests values, got %d", want, total["Requests"])
+	}
+	// A Flush between NewContext and Put removes the context, and the
+	// Namespace, Dimension or Put after it is reported instead.
+	mu.Lock()
+	defer mu.Unlock()
+	if total["Latency"] > want || total["Latency"] < want-removed {
+		t.Errorf("expected %d Latency values, less at most %d reported, got %d", want, removed, total["Latency"])
 	}
 }
 

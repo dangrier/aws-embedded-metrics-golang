@@ -238,23 +238,25 @@ func ExampleContext_ResetDimensions() {
 	// {"Invoices":1,"Orders":1,"ServiceName":"checkout-fn","ServiceType":"AWS::Lambda::Function","_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"shop","Dimensions":[["ServiceName","ServiceType"]],"Metrics":[{"Name":"Orders","Unit":"Count"}]},{"Namespace":"billing","Dimensions":[[]],"Metrics":[{"Name":"Invoices","Unit":"Count"}]}]},"executionEnvironment":"AWS_Lambda_provided.al2023","functionVersion":"$LATEST","logStreamId":"2026/11/03/[$LATEST]abc123","memorySize":"128"}
 }
 
-// Flush writes the metrics, then clears the values and properties, so one
-// logger can be reused for each unit of work, such as each Lambda
-// invocation. The namespace and dimensions are kept. Each flush writes the
-// time it is called, unless a timestamp was set, as it is here so the
-// output stays the same.
+// Flush writes the metrics, then clears the values and properties and
+// removes the contexts, so one logger can be reused for each unit of work,
+// such as each Lambda invocation. The namespace and dimensions of the logger
+// are kept, and contexts are made again for each unit of work. Each flush
+// writes the time it is called, unless a timestamp was set, as it is here so
+// the output stays the same.
 func ExampleLogger_Flush() {
 	logger := emf.New(exampleTime).Namespace("api").Dimension("Operation", "GetItem")
 
-	handle := func(requestID string) {
+	handle := func(requestID, customer string) {
 		defer logger.Flush()
 		logger.Property("requestId", requestID).MetricAs("Requests", 1, emf.Count)
+		logger.NewContext().Namespace("billing").Dimension("Customer", customer).MetricAs("Charges", 1, emf.Count)
 	}
-	handle("request-1")
-	handle("request-2")
+	handle("request-1", "acme")
+	handle("request-2", "globex")
 	// Output:
-	// {"Operation":"GetItem","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Operation"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]}]},"requestId":"request-1"}
-	// {"Operation":"GetItem","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Operation"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]}]},"requestId":"request-2"}
+	// {"Charges":1,"Customer":"acme","Operation":"GetItem","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Operation"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]},{"Namespace":"billing","Dimensions":[["Customer"]],"Metrics":[{"Name":"Charges","Unit":"Count"}]}]},"requestId":"request-1"}
+	// {"Charges":1,"Customer":"globex","Operation":"GetItem","Requests":1,"_aws":{"Timestamp":1791500000000,"CloudWatchMetrics":[{"Namespace":"api","Dimensions":[["Operation"]],"Metrics":[{"Name":"Requests","Unit":"Count"}]},{"Namespace":"billing","Dimensions":[["Customer"]],"Metrics":[{"Name":"Charges","Unit":"Count"}]}]},"requestId":"request-2"}
 }
 
 // SetTimestamp records metrics for another time, such as when an event

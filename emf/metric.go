@@ -62,7 +62,7 @@ func (l *Logger) PutValues(name string, values []float64, opts ...MetricOption) 
 // to its values, which are logged as a list.
 func (c *Context) Put(name string, value float64, opts ...MetricOption) *Context {
 	o := newMetricOptions(opts)
-	c.registry.do(func() { c.put(name, value, o.unit, o.resolution) })
+	c.do(func() { c.put(name, value, o.unit, o.resolution) })
 	return c
 }
 
@@ -70,7 +70,7 @@ func (c *Context) Put(name string, value float64, opts ...MetricOption) *Context
 // than 100 values are split across several log lines.
 func (c *Context) PutValues(name string, values []float64, opts ...MetricOption) *Context {
 	o := newMetricOptions(opts)
-	c.registry.do(func() { c.putValues(name, values, o) })
+	c.do(func() { c.putValues(name, values, o) })
 	return c
 }
 

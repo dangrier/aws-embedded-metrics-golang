@@ -246,6 +246,7 @@ func FuzzSpecCompliance(f *testing.F) {
 	// WithResetDimensionsOnFlush, with a metric name reused as a dimension.
 	f.Add("ns", "d", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(15))
 	f.Add("ns", "d", "v", "w", "m", 3600000, "f", 1.0, "None", "p", uint8(150), uint8(30))
+	f.Add("ns", "d", "v", "w", "m", 0, "f", 1.0, "None", "p", uint8(5), uint8(30))
 	f.Add("ns", "d", "v", "w", "m", 1300000000, "f", 1.0, "None", "p", uint8(5), uint8(32))
 	f.Add("ns", "ServiceName", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(150), uint8(47))
 	f.Add("ns", "fuzzFlushed", "v", "w", "m", 1, "f", 1.0, "None", "p", uint8(3), uint8(51))
@@ -356,12 +357,14 @@ func FuzzSpecCompliance(f *testing.F) {
 			other.SetDimensions(useDefault, nil, []emf.Dimension{emf.NewDimension(floatName, dimValue)})
 		}
 
-		// A timestamp from the input, up to 30 days in the past, so it may be
-		// outside CloudWatch's window. It is set after the values are added,
-		// and must still be written for them.
+		// A timestamp from the input, from 30 days in the past to 3 hours in
+		// the future, so it may be outside CloudWatch's window at either end.
+		// It is set after the values are added, and must still be written
+		// for them.
 		var timestamp time.Time
 		if write == writeFlushSetTimestamp {
-			timestamp = time.Now().Add(-time.Duration(uint64(intValue)%uint64(30*24*time.Hour/time.Millisecond)) * time.Millisecond)
+			span := uint64((30*24*time.Hour + 3*time.Hour) / time.Millisecond)
+			timestamp = time.Now().Add(3*time.Hour - time.Duration(uint64(intValue)%span)*time.Millisecond)
 			logger.SetTimestamp(timestamp)
 		}
 		if write == writeLog {
@@ -387,12 +390,20 @@ func FuzzSpecCompliance(f *testing.F) {
 		}
 
 		// The next unit of work adds one metric. The flush must have cleared
-		// every other metric and property, in every context, so only this
-		// metric is written, with its one value, and the checked property
-		// isn't. Its name may be a dimension the flush kept, and then it is
-		// skipped and reported.
+		// every other metric and property, and removed the contexts, so only
+		// this metric is written, with its one value, and the checked
+		// property isn't. Its name may be a dimension the flush kept, and
+		// then it is skipped and reported. The removed contexts write
+		// nothing, and each use is reported.
 		buf.Reset()
 		errs = nil
+		ctx.Metric(fuzzFlushedName+"Ctx", 1)
+		other.Dimension(dimKey, dimValue)
+		if removed := slices.IndexFunc(errs, func(err error) bool {
+			return strings.Contains(err.Error(), "removed by Flush")
+		}); removed < 0 || len(errs) != 2 {
+			t.Errorf("expected 2 errors for the removed contexts, got %v", errs)
+		}
 		logger.Metric(fuzzFlushedName, 1).Flush()
 		if buf.Len() == 0 {
 			if len(errs) == 0 {
@@ -450,11 +461,13 @@ const fuzzFlushedName = "fuzzFlushed"
 func assertFuzzLines(t *testing.T, out []byte, errs []error, timestamp time.Time) {
 	t.Helper()
 	// The logger checked the window a moment ago, so a timestamp within a
-	// minute of its edge may be reported or not.
+	// minute of either edge may be reported or not.
 	now := time.Now()
-	edge := now.Add(-maxTimestampPast)
-	outside := !timestamp.IsZero() && timestamp.Before(edge.Add(-time.Minute))
-	nearEdge := !timestamp.IsZero() && !outside && timestamp.Before(edge.Add(time.Minute))
+	past, future := now.Add(-maxTimestampPast), now.Add(maxTimestampFuture)
+	outside := !timestamp.IsZero() &&
+		(timestamp.Before(past.Add(-time.Minute)) || timestamp.After(future.Add(time.Minute)))
+	nearEdge := !timestamp.IsZero() && !outside &&
+		(timestamp.Before(past.Add(time.Minute)) || timestamp.After(future.Add(-time.Minute)))
 	for line := range bytes.Lines(out) {
 		for _, v := range specViolations(line, now) {
 			if (!outside && !nearEdge) || !strings.HasPrefix(v, "Timestamp ") {
