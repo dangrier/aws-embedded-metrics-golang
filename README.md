@@ -260,22 +260,34 @@ cold-start time. To share one logger, use `Flush()` instead.
 ### Reusing a logger with Flush
 
 `Flush()` writes the same lines as `Log()`, then clears the metric values and properties, and
-removes the contexts, so the logger is ready for the next unit of work. This is how the official AWS libraries' `flush()` works.
-In Lambda, create the logger once, and flush it at the end of each invocation:
+removes the contexts, so the logger is ready for the next unit of work. This is how the official
+AWS libraries' `flush()` works. In Lambda, create the logger once, and flush it at the end of each
+invocation:
 
 ```go
+// Set up once: the namespace and the dimensions every invocation shares.
 var metrics = emf.New().Namespace("api").Dimension("Operation", "GetItem")
 
 func handler(ctx context.Context, req Request) (Response, error) {
 	defer metrics.Flush()
 
 	metrics.Property("requestId", req.ID).MetricAs("Requests", 1, emf.Count)
+	// A dimension for this request only goes in a context, which the flush removes.
+	metrics.NewContext().Namespace("billing").
+		Dimension("Customer", req.CustomerID).
+		MetricAs("Charges", 1, emf.Count)
 	// ...
 	return Response{}, nil
 }
 ```
 
-Each invocation writes `"Requests":1`, never `[1,1]`. After a flush:
+Each invocation writes `"Requests":1`, never `[1,1]`, and only its own customer.
+
+Put dimensions that change with each request in a context made inside the handler, or use
+`WithResetDimensionsOnFlush()` (below). A dimension added to the logger itself is kept by the flush,
+so a request that doesn't set it again writes the value from an earlier request.
+
+After a flush:
 
 - **Cleared:** metric values, and properties set with `Property` or `PropertyValue`. A metric name
   can be used again with another unit, or as a dimension or property, and a dimension or metric
@@ -330,15 +342,23 @@ metrics.SetTimestamp(event.Time).Metric("Messages", 1).Flush()
 
 A timestamp set either way applies to every line written afterwards, by `Log()` or `Flush()`, until
 it is set again. There is no way back to the time of each flush, and the zero `time.Time` isn't
-special: it is written as that time, and reported as outside CloudWatch's window. It is checked against [CloudWatch's window](#spec-compliance-and-errors) when a
-line is written, not when it is set.
+special: it is written as that time.
+
+So on a logger you reuse with `Flush()`, don't use `WithTimestamp`: every flush would write the time
+given to `New()`, and once that is more than 14 days old, CloudWatch stops publishing the metrics.
+Call `SetTimestamp` in every unit of work instead, as above, or use a separate logger for metrics
+with a timestamp of their own. Otherwise a unit of work that doesn't set it writes the timestamp of
+an earlier one.
+
+The timestamp is checked against [CloudWatch's window](#spec-compliance-and-errors) each time a line
+is written, not when it is set.
 
 ## Options
 
 ```go
 emf.New(
 	emf.WithWriter(os.Stderr),                     // write somewhere other than stdout
-	emf.WithTimestamp(time.Now().Add(-time.Hour)), // record metrics for another time
+	emf.WithTimestamp(time.Now().Add(-time.Hour)), // record metrics for another time (not with Flush)
 	emf.WithResetDimensionsOnFlush(),              // drop your dimensions after each Flush
 	emf.WithoutDimensions(),                       // leave out the Lambda dimensions and properties
 	emf.WithMergedDefaultDimensions(),             // add the Lambda dimensions to each of your sets
