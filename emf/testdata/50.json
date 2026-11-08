@@ -1,0 +1,80 @@
+[
+  {
+    "Orders": 1,
+    "Refunds": 1,
+    "Service": "checkout",
+    "ServiceName": "some-func-name",
+    "ServiceType": "AWS::Lambda::Function",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType",
+              "Service"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Orders",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        },
+        {
+          "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Refunds",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "other"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    },
+    "executionEnvironment": "golang",
+    "functionVersion": "1",
+    "logStreamId": "log/stream",
+    "memorySize": "128"
+  },
+  {
+    "Orders": 2,
+    "Service": "checkout",
+    "ServiceName": "some-func-name",
+    "ServiceType": "AWS::Lambda::Function",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "ServiceName",
+              "ServiceType",
+              "Service"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Orders",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    },
+    "executionEnvironment": "golang",
+    "functionVersion": "1",
+    "logStreamId": "log/stream",
+    "memorySize": "128"
+  }
+]

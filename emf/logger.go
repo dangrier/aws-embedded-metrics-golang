@@ -18,8 +18,12 @@ import (
 // Logger for metrics with default Context. A Logger and its Contexts are
 // safe to use from several goroutines at once.
 type Logger struct {
-	out               io.Writer
-	timestamp         int64
+	out       io.Writer
+	timestamp int64 // milliseconds since the Unix epoch
+	// timestampSet is true once the timestamp is set with WithTimestamp or
+	// SetTimestamp. Then Flush writes it too, instead of the current time.
+	timestampSet      bool
+	resetOnFlush      bool // set by WithResetDimensionsOnFlush
 	defaultContext    Context
 	contexts          []*Context
 	defaultProperties map[string]any // the Lambda properties and traceId, set by New
@@ -43,6 +47,20 @@ type Context struct {
 	// as each set is added, so Log doesn't build them again.
 	written  []DimensionSet
 	registry *registry
+	removed  bool // set by the Flush that removed the context from its logger
+}
+
+// do runs fn while holding the registry lock, unless a Flush removed c from
+// its logger. Then fn doesn't run, and the use is reported, since c's values
+// would never be written.
+func (c *Context) do(fn func()) {
+	c.registry.do(func() {
+		if c.removed {
+			c.registry.invalid("skipped: the context was removed by Flush, so make a new one with NewContext")
+			return
+		}
+		fn()
+	})
 }
 
 // defaultDimensions are the Lambda default dimensions, shared by the
@@ -106,12 +124,29 @@ func WithWriter(w io.Writer) LoggerOption {
 	}
 }
 
-// WithTimestamp customizes the timestamp used by a logger. CloudWatch only
-// publishes metrics with a timestamp from 14 days in the past to 2 hours in
-// the future, checked when Log is called.
+// WithTimestamp customizes the timestamp used by a logger. Log and Flush
+// both write it, and it is kept across flushes, as with SetTimestamp.
+// CloudWatch only publishes metrics with a timestamp from 14 days in the past
+// to 2 hours in the future, checked when a line is written.
 func WithTimestamp(t time.Time) LoggerOption {
 	return func(l *Logger) {
 		l.timestamp = t.UnixMilli()
+		l.timestampSet = true
+	}
+}
+
+// WithResetDimensionsOnFlush makes each Flush remove the dimensions you
+// added to the default context, as ResetDimensions does, so the next unit of
+// work starts without them. Dimensions set with SetDimensions are removed
+// too. The default context keeps its namespace, and its choice about the
+// Lambda default dimensions: if it dropped them with ResetDimensions(false)
+// or SetDimensions(false, ...), it doesn't get them back. Without this
+// option, Flush keeps the default context's dimensions. Either way, Flush
+// removes the contexts made with NewContext, and with them their dimensions.
+// Log never removes dimensions.
+func WithResetDimensionsOnFlush() LoggerOption {
+	return func(l *Logger) {
+		l.resetOnFlush = true
 	}
 }
 
@@ -164,7 +199,8 @@ func WithErrorHandler(fn func(error)) LoggerOption {
 // New creates logger with reasonable defaults for Lambda functions:
 // - Prints to os.Stdout.
 // - Context based on Lambda environment variables.
-// - Timestamp set to the time when New was called.
+// - Timestamp set to the time when New was called, for Log. Flush writes
+// the time it is called instead.
 // Specify LoggerOptions to customize the logger. The Lambda environment
 // variables are read once, by New, and contexts made later with NewContext
 // use the same values.
@@ -190,11 +226,7 @@ func New(opts ...LoggerOption) *Logger {
 		}
 	}
 
-	// only collect traces which have been sampled
-	amznTraceID := os.Getenv("_X_AMZN_TRACE_ID")
-	if strings.Contains(amznTraceID, "Sampled=1") {
-		l.setDefaultProperty("traceId", amznTraceID)
-	}
+	l.readTraceID()
 
 	l.registry = newRegistry(l.onError)
 	l.registry.logger = &l
@@ -322,6 +354,19 @@ func (l *Logger) storeProperty(key string, value any) {
 	l.properties[key] = value
 }
 
+// readTraceID sets the traceId property from the X-Ray trace header Lambda
+// sets for each invocation, or removes it if the trace isn't sampled. New
+// and Flush call it. Flush holds the registry lock.
+func (l *Logger) readTraceID() {
+	// only collect traces which have been sampled
+	amznTraceID := os.Getenv("_X_AMZN_TRACE_ID")
+	if strings.Contains(amznTraceID, "Sampled=1") {
+		l.setDefaultProperty("traceId", amznTraceID)
+	} else {
+		delete(l.defaultProperties, "traceId")
+	}
+}
+
 // setDefaultProperty sets one of the properties New adds. A dimension or
 // metric may replace it without being reported.
 func (l *Logger) setDefaultProperty(key, value string) {
@@ -434,17 +479,108 @@ func (l *Logger) MetricsFloatAs(m map[string]float64, unit MetricUnit) *Logger {
 // CloudWatch's 1 MB limit, is reported to the error handler, but the lines
 // are still written.
 //
-// A Logger isn't meant to be reused. Log writes every value added since New,
-// so calling it again writes the earlier values again, and the timestamp stays
-// at the time New was called (or the one set by WithTimestamp). Create a new
-// Logger for each unit of work, such as each Lambda invocation.
+// Log doesn't clear anything. It writes every value added since New (or
+// since the last Flush), so calling it again writes the earlier values again,
+// and the timestamp stays at the time New was called (or the one set by
+// WithTimestamp or SetTimestamp). To reuse a logger, such as one shared by
+// every invocation of a Lambda function, call Flush instead. Otherwise,
+// create a new Logger for each unit of work.
 func (l *Logger) Log() {
 	// Take a snapshot under the lock, then encode outside it so concurrent
 	// Log calls don't wait on each other. Writing has its own lock, so lines
 	// are never mixed together.
 	var events []map[string]any
-	l.registry.do(func() { events = l.snapshot() })
+	l.registry.do(func() { events = l.snapshot(l.timestamp) })
+	l.write(events)
+}
 
+// Flush writes the lines Log would, then clears every metric value and
+// every property set with Property or PropertyValue, and removes every
+// context made with NewContext, so the logger can be reused for the next
+// unit of work, such as the next Lambda invocation. A value written by one
+// Flush isn't written by a later one, and a metric name can be used again
+// with any unit, or as a dimension or property, without being reported.
+// Log doesn't clear anything, so on a reused logger, call only Flush: a Log
+// before a Flush writes the same values again.
+//
+// A removed context's dimensions aren't written again, and its keys are free
+// for other uses. A Context kept after a Flush removed it does nothing, and
+// each use is reported to the error handler, so make a new one with
+// NewContext for each unit of work.
+//
+// For the default context, Flush keeps:
+//   - the namespace
+//   - the dimensions, unless the logger was made with
+//     WithResetDimensionsOnFlush
+//   - its choice about the Lambda default dimensions
+//   - the Lambda properties New added, which are written on every line.
+//     Lambda sets the trace header for each invocation, so traceId is read
+//     again by each Flush, and is written only if the trace is sampled
+//   - the timestamp, if it was set with WithTimestamp or SetTimestamp
+//
+// Without a timestamp set that way, each Flush writes the time it is called,
+// not the time of New, so a logger kept for a long time doesn't write an old
+// timestamp. Log still writes the time of New. SetTimestamp with the zero
+// time.Time isn't special: it sets that time, and doesn't go back to the
+// time of each Flush.
+//
+// With no metrics, Flush writes nothing, as Log does, but still clears the
+// properties, and the dimensions with WithResetDimensionsOnFlush. Values and
+// properties added while Flush runs, from other goroutines, are either
+// written by it or kept for the next one, never both.
+func (l *Logger) Flush() {
+	var events []map[string]any
+	l.registry.do(func() {
+		timestamp := l.timestamp
+		if !l.timestampSet {
+			timestamp = time.Now().UnixMilli()
+		}
+		l.readTraceID()
+		events = l.snapshot(timestamp)
+		l.clear()
+	})
+	l.write(events)
+}
+
+// SetTimestamp sets the timestamp Log and Flush write, replacing the one
+// from New or WithTimestamp. It is kept across flushes, until it is set
+// again. CloudWatch only publishes metrics with a timestamp from 14 days in
+// the past to 2 hours in the future. That is checked when a line is written,
+// not when the timestamp is set, and a timestamp outside it is reported to
+// the error handler, but the lines are still written.
+func (l *Logger) SetTimestamp(t time.Time) *Logger {
+	l.registry.do(func() {
+		l.timestamp = t.UnixMilli()
+		l.timestampSet = true
+	})
+	return l
+}
+
+// clear removes what Flush clears. It must be called while holding the
+// registry lock. A snapshot copies the values and properties it needs, and
+// metric slices are replaced, not truncated, so a snapshot taken before
+// stays valid.
+func (l *Logger) clear() {
+	l.defaultContext.metricDirective.Metrics = nil
+	if l.resetOnFlush {
+		l.defaultContext.resetOwnDimensions()
+	}
+	for _, c := range l.contexts {
+		c.removed = true
+	}
+	l.contexts = nil
+	clear(l.properties)
+	clear(l.registry.metrics)
+	clear(l.registry.more)
+}
+
+// write encodes events and writes them, one line each, then passes any
+// errors to the error handler. It must be called without holding the
+// registry lock.
+func (l *Logger) write(events []map[string]any) {
+	if len(events) == 0 {
+		return
+	}
 	var errs []error
 	lines := make([][]byte, 0, len(events))
 	for _, values := range events {
@@ -471,17 +607,17 @@ func (l *Logger) Log() {
 	l.registry.handle(errs)
 }
 
-// snapshot returns the root object of each log event to write. It must be
-// called while holding the registry lock. Metric and dimension slices are
+// snapshot returns the root object of each log event to write, with the
+// given timestamp. It must be called while holding the registry lock. Metric and dimension slices are
 // only ever appended to, or replaced by new ones when dimensions are reset,
 // so the snapshot stays valid after the lock is released.
-func (l *Logger) snapshot() []map[string]any {
+func (l *Logger) snapshot(timestamp int64) []map[string]any {
 	directives := l.directives()
 	if len(directives) == 0 {
 		return nil
 	}
 
-	l.registry.checkTimestamp(time.UnixMilli(l.timestamp), time.Now())
+	l.registry.checkTimestamp(time.UnixMilli(timestamp), time.Now())
 
 	// A metric with more than 100 values is logged over several rounds of
 	// events, with up to 100 of its values in each round.
@@ -502,11 +638,11 @@ func (l *Logger) snapshot() []map[string]any {
 	// Usually the contexts agree on every dimension value, so they share
 	// lines. Contexts that disagree are written on separate lines.
 	if !disagree {
-		return l.groupEvents(nil, contextGroup{directives: directives}, dims, rounds)
+		return l.groupEvents(nil, contextGroup{directives: directives}, dims, rounds, timestamp)
 	}
 	var events []map[string]any
 	for _, g := range l.groupContexts() {
-		events = l.groupEvents(events, g, dims, rounds)
+		events = l.groupEvents(events, g, dims, rounds, timestamp)
 	}
 	return events
 }
@@ -548,14 +684,14 @@ func (l *Logger) lineDimensions() (dims map[string]any, disagree bool) {
 }
 
 // groupEvents appends the root objects of a group's log events to events.
-func (l *Logger) groupEvents(events []map[string]any, g contextGroup, dims map[string]any, rounds int) []map[string]any {
+func (l *Logger) groupEvents(events []map[string]any, g contextGroup, dims map[string]any, rounds int, timestamp int64) []map[string]any {
 	for round := range rounds {
 		directives := g.directives
 		if round > 0 {
 			directives = l.directivesInRound(g.directives, round)
 		}
 		for event := range splitDirectives(directives, maxMetricsPerEvent) {
-			events = append(events, l.eventValues(event, g, dims, round))
+			events = append(events, l.eventValues(event, g, dims, round, timestamp))
 		}
 	}
 	return events
@@ -693,7 +829,7 @@ func splitDirectives(directives []MetricDirective, limit int) iter.Seq[[]MetricD
 // its directives refer to. A dimension value replaces a property with the
 // same key, and the group's own dimension values replace those from dims.
 // If dims is nil, the default context is the only context.
-func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims map[string]any, round int) map[string]any {
+func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims map[string]any, round int, timestamp int64) map[string]any {
 	size := len(l.defaultProperties) + len(l.properties) + len(dims) + 1
 	if dims == nil {
 		size += l.defaultContext.dimensionCount()
@@ -718,7 +854,7 @@ func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims 
 		}
 	}
 	values[metadataKey] = Metadata{
-		Timestamp:    l.timestamp,
+		Timestamp:    timestamp,
 		Metrics:      directives,
 		LogGroupName: l.logGroupName,
 	}
@@ -729,7 +865,9 @@ func (l *Logger) eventValues(directives []MetricDirective, g contextGroup, dims 
 // namespace, dimension sets and dimension values, and shares the logger's
 // properties. Contexts are written on the same line, unless they set the
 // same dimension key to different values. Then they are written on separate
-// lines, so each context's metrics keep their own value.
+// lines, so each context's metrics keep their own value. Flush removes the
+// context from the logger, after writing its metrics, so on a reused logger,
+// make the contexts for each unit of work after the last Flush.
 func (l *Logger) NewContext() *Context {
 	var c Context
 	l.registry.do(func() {
@@ -741,7 +879,7 @@ func (l *Logger) NewContext() *Context {
 
 // Namespace sets namespace on given context.
 func (c *Context) Namespace(namespace string) *Context {
-	c.registry.do(func() { c.namespace(namespace) })
+	c.do(func() { c.namespace(namespace) })
 	return c
 }
 
@@ -760,7 +898,7 @@ func (c *Context) Dimension(key, value string) *Context {
 // most 30 keys including ServiceName and ServiceType, unless the context
 // dropped the defaults.
 func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
-	c.registry.do(func() { c.dimensionSet(dimensions) })
+	c.do(func() { c.dimensionSet(dimensions) })
 	return c
 }
 
@@ -786,7 +924,7 @@ func (c *Context) DimensionSet(dimensions ...Dimension) *Context {
 // replaces a property is reported again, since the property was no longer
 // replaced in between.
 func (c *Context) ResetDimensions(useDefault bool) *Context {
-	c.registry.do(func() { c.resetDimensions(useDefault) })
+	c.do(func() { c.resetDimensions(useDefault) })
 	return c
 }
 
@@ -805,7 +943,7 @@ func (c *Context) ResetDimensions(useDefault bool) *Context {
 // the same as ResetDimensions(useDefault). See ResetDimensions for what
 // happens to keys that aren't set again.
 func (c *Context) SetDimensions(useDefault bool, sets ...[]Dimension) *Context {
-	c.registry.do(func() { c.setDimensions(useDefault, sets) })
+	c.do(func() { c.setDimensions(useDefault, sets) })
 	return c
 }
 
@@ -821,13 +959,13 @@ func (c *Context) MetricFloat(name string, value float64) *Context {
 
 // MetricAs puts int metric with MetricUnit on given context.
 func (c *Context) MetricAs(name string, value int, unit MetricUnit) *Context {
-	c.registry.do(func() { c.put(name, value, unit, standardResolution) })
+	c.do(func() { c.put(name, value, unit, standardResolution) })
 	return c
 }
 
 // MetricFloatAs puts float metric with MetricUnit on given context.
 func (c *Context) MetricFloatAs(name string, value float64, unit MetricUnit) *Context {
-	c.registry.do(func() { c.put(name, value, unit, standardResolution) })
+	c.do(func() { c.put(name, value, unit, standardResolution) })
 	return c
 }
 
@@ -859,8 +997,9 @@ func (c *Context) resetDimensions(useDefault bool) {
 // resetOwnDimensions removes the dimension sets and values added to c, and
 // keeps c's choice about the default dimensions: a context that dropped them
 // with ResetDimensions(false) or SetDimensions(false, ...) doesn't get them
-// back. Flush calls it on each context while holding the registry lock, so
-// the next unit of work starts without the last one's dimensions.
+// back. With WithResetDimensionsOnFlush, Flush calls it on the default
+// context while holding the registry lock, so the next unit of work starts
+// without the last one's dimensions.
 func (c *Context) resetOwnDimensions() {
 	c.resetDimensions(c.defaults != nil)
 }

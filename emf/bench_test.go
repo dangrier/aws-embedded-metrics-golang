@@ -204,3 +204,25 @@ func BenchmarkPropertyValue(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkFlush reuses one logger for each invocation in Lambda, as a
+// handler with a package-level logger would: a typical event, then Flush.
+func BenchmarkFlush(b *testing.B) {
+	b.Setenv("AWS_LAMBDA_FUNCTION_NAME", "checkout-fn")
+	b.Setenv("AWS_EXECUTION_ENV", "AWS_Lambda_provided.al2023")
+	for _, mode := range lambdaModes {
+		b.Run(mode.name, func(b *testing.B) {
+			logger := emf.New(append([]emf.LoggerOption{emf.WithWriter(io.Discard)}, mode.opts...)...).
+				Namespace("app").
+				Dimension("Service", "api").
+				Dimension("Operation", "GetItem")
+			b.ReportAllocs()
+			for b.Loop() {
+				logger.Property("requestId", "989ffbf8-9ace-4817-a57c-e4dd734019ee").
+					Metric("Requests", 1).
+					MetricFloatAs("Latency", 12.5, emf.Milliseconds).
+					Flush()
+			}
+		})
+	}
+}

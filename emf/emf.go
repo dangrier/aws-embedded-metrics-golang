@@ -11,6 +11,11 @@
 //		MetricAs("OrderTotal", 120, emf.Count).
 //		Log()
 //
+// Log doesn't clear anything, so create a Logger for each unit of work. To
+// reuse one, such as a Logger shared by every invocation of a Lambda
+// function, call Flush instead, which writes the same lines and then clears
+// the metric values and properties.
+//
 // Output always follows the EMF specification. Input that would break it is
 // skipped and reported to the WithErrorHandler handler, and the rest is still
 // logged. A Logger is safe to use from several goroutines at once.

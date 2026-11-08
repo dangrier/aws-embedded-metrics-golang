@@ -1,0 +1,56 @@
+[
+  {
+    "Latency": 5,
+    "Orders": 1,
+    "Region": 1,
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            []
+          ],
+          "Metrics": [
+            {
+              "Name": "Region",
+              "Unit": "None"
+            },
+            {
+              "Name": "Latency",
+              "Unit": "Milliseconds"
+            },
+            {
+              "Name": "Orders",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    }
+  },
+  {
+    "Latency": "slow",
+    "Orders": 2,
+    "Region": "au",
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Region"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Orders",
+              "Unit": "Count"
+            }
+          ],
+          "Namespace": "aws-embedded-metrics"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    }
+  }
+]

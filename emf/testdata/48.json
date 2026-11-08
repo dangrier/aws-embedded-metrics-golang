@@ -1,0 +1,64 @@
+[
+  {
+    "Latency": [
+      12.5,
+      8
+    ],
+    "Operation": "Get",
+    "Requests": 1,
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Operation"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Requests",
+              "Unit": "None"
+            },
+            {
+              "Name": "Latency",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "api"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    },
+    "requestId": "a",
+    "statusCode": 200
+  },
+  {
+    "Latency": 9,
+    "Operation": "Get",
+    "Requests": 1,
+    "_aws": {
+      "CloudWatchMetrics": [
+        {
+          "Dimensions": [
+            [
+              "Operation"
+            ]
+          ],
+          "Metrics": [
+            {
+              "Name": "Requests",
+              "Unit": "None"
+            },
+            {
+              "Name": "Latency",
+              "Unit": "None"
+            }
+          ],
+          "Namespace": "api"
+        }
+      ],
+      "Timestamp": "\u003c\u003cPRESENCE\u003e\u003e"
+    },
+    "requestId": "b"
+  }
+]
