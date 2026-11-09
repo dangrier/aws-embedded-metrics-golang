@@ -72,14 +72,6 @@ means research that:
 - avoids harming other people, their data or their services
 - stops and reports promptly once a problem is confirmed, without using it further
 
-For such research, I will:
-
-- not take legal action against you, or report you to law enforcement, for it
-- not pursue claims against you for getting around technical measures, or for breaking licence
-  terms, where you did so only to research a problem under this policy
-- if someone else takes legal action against you for it, make it known that your research was
-  authorised by me
-
 This only covers this repository and its code, and only claims I control. I can't authorise
 testing against AWS, GitHub, or anyone else's systems or applications that use this library.
 Follow their own policies for those. If you're unsure whether something is covered, ask in a
