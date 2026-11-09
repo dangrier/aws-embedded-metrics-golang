@@ -3,7 +3,7 @@
 ## Supported versions
 
 Security fixes go into the latest release only. The project is maintained by one person, so older
-releases are not patched. If you are on an older version, upgrade to the latest release to pick up
+releases may not be patched. If you are on an older version, upgrade to the latest release to pick up
 a fix.
 
 The library needs a supported version of Go. Problems in the Go standard library or toolchain should
@@ -11,7 +11,8 @@ be reported to the [Go project](https://go.dev/doc/security/policy), not here.
 
 ## Reporting a vulnerability
 
-**Please do not open a public issue, discussion or pull request for a security problem.**
+> [!WARNING]
+> Please do not open a public issue, discussion or pull request for a security problem.
 
 Report it privately through
 [GitHub's private vulnerability reporting](https://github.com/dangrier/aws-embedded-metrics-golang/security/advisories/new)
@@ -63,6 +64,26 @@ Out of scope:
 
 ## Safe harbour
 
-If you make a good-faith effort to follow this policy, I will not take legal action against you for
-your research, and will treat your report as authorised. Please only test against your own code and
-accounts, and do not access or change other people's data.
+I consider security research carried out in good faith under this policy to be authorised. That
+means research that:
+
+- follows this policy, including reporting privately and giving me time to fix the problem
+- is done only against your own code, systems and accounts, such as a local copy of this library
+- avoids harming other people, their data or their services
+- stops and reports promptly once a problem is confirmed, without using it further
+
+For such research, I will:
+
+- not take legal action against you, or report you to law enforcement, for it
+- not pursue claims against you for getting around technical measures, or for breaking licence
+  terms, where you did so only to research a problem under this policy
+- if someone else takes legal action against you for it, make it known that your research was
+  authorised by me
+
+This only covers this repository and its code, and only claims I control. I can't authorise
+testing against AWS, GitHub, or anyone else's systems or applications that use this library.
+Follow their own policies for those. If you're unsure whether something is covered, ask in a
+private advisory before going further.
+
+There is no bug bounty. This library is provided under its [licence](../LICENSE), without
+warranty.
