@@ -73,8 +73,8 @@ means research that:
 - stops and reports promptly once a problem is confirmed, without using it further
 
 This only covers this repository and its code. I can't authorise testing against AWS, GitHub, or
-anyone else's systems or applications that use this library. Follow their own policies for those. If you're unsure whether something is covered, ask in a
-private advisory before going further.
+anyone else's systems or applications that use this library. Follow their own policies for those.
+If you're unsure whether something is covered, ask in a private advisory before going further.
 
 There is no bug bounty. This library is provided under its [licence](../LICENSE), without
 warranty.
